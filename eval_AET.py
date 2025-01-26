@@ -32,6 +32,8 @@ import time
 from SA_AET import Attacker, ImageAttacker, TextAttacker
 from dataset import paired_dataset
 
+
+
 def toImage(norm_img):
     pil_array = (norm_img * 255).to(torch.uint8).cpu().numpy()
     pil_img=Image.fromarray(np.transpose(pil_array, (1, 2, 0)))
@@ -102,7 +104,7 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
 
     all_texts_all=[]
 
-    for batch_idx, (images, texts_group, images_ids, text_ids_groups,_) in enumerate(data_loader):
+    for batch_idx, (images, texts_group, images_ids, text_ids_groups) in enumerate(data_loader):
         print(f'--------------------> batch:{batch_idx}/{len(data_loader)}')
         for index_text in range(len(texts_group)):
             all_texts_all+=texts_group[index_text]
@@ -112,7 +114,7 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
        #使用这些索引来选取张量中的数据
     all_texts = random.sample(all_texts_all, num_samples)
 
-    for batch_idx, (images, texts_group, images_ids, text_ids_groups,image_paths) in enumerate(data_loader):
+    for batch_idx, (images, texts_group, images_ids, text_ids_groups) in enumerate(data_loader):
         print(f'--------------------> batch:{batch_idx}/{len(data_loader)}')
         texts_ids = []
         txt2img = []
@@ -386,6 +388,7 @@ def main(args, config):
     t_ref_models = []
     t_tokenizers = []
     t_model_names = copy.deepcopy(args.model_list)
+    print(t_model_names)
     t_model_names.remove(args.source_model)
     for t_model_name in t_model_names:
         t_model, t_ref_model, t_tokenizer = load_model(args,t_model_name, args.target_text_encoder, device)
@@ -430,7 +433,7 @@ def main(args, config):
             ])
             t_test_transforms.append(t_test_transform)
     
-    test_dataset = paired_dataset2(config['test_file'], s_test_transform, config['image_root'])
+    test_dataset = paired_dataset(config['test_file'], s_test_transform, config['image_root'])
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size,
                              num_workers=4, collate_fn=test_dataset.collate_fn)
 
@@ -443,7 +446,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', default=8, type=int)
     parser.add_argument('--cuda_id', default=0, type=int)
 
-    parser.add_argument('--model_list', default=['ALBEF','TCL','CLIP_ViT','CLIP_CNN'], type=list)
+    parser.add_argument('--model_list', nargs='+', type=str)
     parser.add_argument('--source_model', default='ALBEF', type=str)
     parser.add_argument('--source_text_encoder', default='bert-base-uncased', type=str)   
     parser.add_argument('--target_text_encoder', default='bert-base-uncased', type=str)

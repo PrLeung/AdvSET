@@ -1,0 +1,9 @@
+
+Performance on CLIP_CNN: 
+ {'txt_r1_ASR (txt_r1)': '100.0(0.0)', 'txt_r5_ASR (txt_r5)': '99.89(0.1)', 'txt_r10_ASR (txt_r10)': '99.9(0.1)', 'img_r1_ASR (img_r1)': '99.97(0.04)', 'img_r5_ASR (img_r5)': '99.73(0.22)', 'img_r10_ASR (img_r10)': '99.53(0.42)'}
+Performance on ALBEF: 
+ {'txt_r1_ASR (txt_r1)': '23.36(74.5)', 'txt_r5_ASR (txt_r5)': '9.42(90.5)', 'txt_r10_ASR (txt_r10)': '6.0(94.0)', 'img_r1_ASR (img_r1)': '38.17(54.54)', 'img_r5_ASR (img_r5)': '21.96(76.34)', 'img_r10_ASR (img_r10)': '16.54(82.64)'}
+Performance on TCL: 
+ {'txt_r1_ASR (txt_r1)': '25.18(72.3)', 'txt_r5_ASR (txt_r5)': '10.65(89.0)', 'txt_r10_ASR (txt_r10)': '6.91(92.9)', 'img_r1_ASR (img_r1)': '41.71(50.52)', 'img_r5_ASR (img_r5)': '24.44(73.46)', 'img_r10_ASR (img_r10)': '17.83(81.02)'}
+Performance on CLIP_ViT: 
+ {'txt_r1_ASR (txt_r1)': '54.23(39.2)', 'txt_r5_ASR (txt_r5)': '33.64(64.1)', 'txt_r10_ASR (txt_r10)': '22.76(76.0)', 'img_r1_ASR (img_r1)': '62.6(25.06)', 'img_r5_ASR (img_r5)': '44.43(48.66)', 'img_r10_ASR (img_r10)': '35.72(59.42)'}
