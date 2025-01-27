@@ -9,6 +9,47 @@ import torch.nn.functional as F
 import random
 import time
 
+def KL(P,Q,mask=None):
+    eps = 0.0000001
+    d = (P+eps).log()-(Q+eps).log()
+    d = P*d
+    if mask !=None:
+        d = d*mask
+    return torch.sum(d)
+def CE(P,Q,mask=None):
+    return KL(P,Q,mask)+KL(1-P,1-Q,mask)
+
+def umap(output_net, target_net, eps=0.0000001):
+    # Normalize each vector by its norm
+    (n, d) = output_net.shape
+    output_net_norm = torch.sqrt(torch.sum(output_net ** 2, dim=1, keepdim=True))
+    output_net = output_net / (output_net_norm + eps)
+    output_net[output_net != output_net] = 0
+    target_net_norm = torch.sqrt(torch.sum(target_net ** 2, dim=1, keepdim=True))
+    target_net = target_net / (target_net_norm + eps)
+    target_net[target_net != target_net] = 0
+    # Calculate the cosine similarity
+    model_similarity = torch.mm(output_net, output_net.transpose(0, 1))
+    model_distance = 1-model_similarity #[0,2]
+    model_distance[range(n), range(n)] = 3
+    model_distance = model_distance - torch.min(model_distance, dim=1)[0].view(-1, 1)
+    model_distance[range(n), range(n)] = 0
+    model_similarity = 1-model_distance
+    target_similarity = torch.mm(target_net, target_net.transpose(0, 1))
+    target_distance = 1-target_similarity
+    target_distance[range(n), range(n)] = 3
+    target_distance = target_distance - torch.min(target_distance,dim=1)[0].view(-1,1)
+    target_distance[range(n), range(n)] = 0
+    target_similarity = 1 - target_distance
+    # Scale cosine similarity to 0..1
+    model_similarity = (model_similarity + 1.0) / 2.0
+    target_similarity = (target_similarity + 1.0) / 2.0
+    # Transform them into probabilities
+    model_similarity = model_similarity / torch.sum(model_similarity, dim=1, keepdim=True)
+    target_similarity = target_similarity / torch.sum(target_similarity, dim=1, keepdim=True)
+    # Calculate the KL-divergence
+    loss = CE(target_similarity,model_similarity)
+    return loss
 
 class Attacker():
     def __init__(self, model, img_attacker, txt_attacker):
@@ -125,10 +166,9 @@ class ImageAttacker():
             scales_num = 1
         else:
             scales_num = len(scales) + 1
-
-        adv_imgs = imgs.detach() + torch.from_numpy(np.random.uniform(-self.eps, self.eps, imgs.shape)).float().to(
-            device)
-        adv_imgs = torch.clamp(adv_imgs, 0.0, 1.0)
+        # 加入高斯噪声
+        adv_imgs = imgs.detach() + torch.from_numpy(np.random.uniform(-self.eps, self.eps, imgs.shape)).float().to(device)
+        adv_imgs = torch.clamp(adv_imgs, 0.0, 1.0) # 限制在0-1之间
 
         last_adv_imgs = None
 
@@ -141,10 +181,12 @@ class ImageAttacker():
                 clone_adv_imgs = adv_imgs.clone()
                 loss_list = []
                 for k in range(self.sample_numbers):
-                    samples.append(self.rand3Num())
+                    samples.append(self.rand3Num()) # 生成三个随机数
+
                 for sample in samples:
+                    # 进行采样
                     adv_imgs = (sample[0] / 100) * clone_adv_imgs + (sample[1] / 100) * imgs + (
-                                sample[2] / 100) * last_adv_imgs
+                                sample[2] / 100) * last_adv_imgs # sk = λ · xI + β ·  ̃xi−1I + γ ·  ̃xi I
                     adv_imgs.requires_grad_()
 
                     if self.normalization is not None:

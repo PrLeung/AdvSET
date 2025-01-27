@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Python: My Script with Args",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${file}",  // 这里是你的 Python 脚本路径
+        "args": [
+          "--config", "./configs/Retrieval_flickr.yaml",
+          "--cuda_id", "7",
+          "--model_list", "ALBEF TCL CLIP_ViT CLIP_CNN",
+          "--source_model", "CLIP_CNN",
+          "--albef_ckpt", "./checkpoints/albef_flickr.pth",
+          "--tcl_ckpt", "./checkpoints/tcl_flickr.pth",
+          "--original_rank_index_path", "./std_eval_idx/flickr30k/"
+        ],
+        "console": "integratedTerminal",
+        "justMyCode": false
+      }
+    ]
+  }
+  
