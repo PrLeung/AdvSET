@@ -105,7 +105,7 @@ class ImageAttacker():
 
         U, S, V = torch.svd(all_txt_supervisions.T.to(torch.float32))
         # projection_matrix = U[:, :30] @ U[:, :30].t()
-        projection_matrix = U[:, 1:len(U)] @ U[:, 1:len(U)].t()
+        projection_matrix = U[:, 1:len(U)] @ U[:, 1:len(U)].t() # 投影到语义空间
         # projection_matrix = U @ U.t()
         # print("txts_embeds.shape",txts_embeds.shape)
         # print("len(txt2img)",len(txt2img))
