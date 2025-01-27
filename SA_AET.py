@@ -16,7 +16,7 @@ class Attacker():
         self.img_attacker = img_attacker
         self.txt_attacker = txt_attacker
 
-    def attack(self, imgs, txts, txt2img, all_texts,device='cpu', max_length=30, scales=None, masks=None, **kwargs):
+    def attack(self, imgs, txts, txt2img, all_texts, device='cpu', max_length=30, scales=None, masks=None, **kwargs):
         with torch.no_grad():
             origin_img_output = self.model.inference_image(self.img_attacker.normalization(imgs))
             img_supervisions = origin_img_output['image_feat'][txt2img]
@@ -27,12 +27,10 @@ class Attacker():
                                                      max_length=max_length, return_tensors="pt").to(device)
             txts_output = self.model.inference_text(txts_input)
             txt_supervisions = txts_output['text_feat']
-
             all_texts_input = self.txt_attacker.tokenizer(all_texts, padding='max_length', truncation=True,
                                                      max_length=max_length, return_tensors="pt").to(device)
             all_texts_output = self.model.inference_text(all_texts_input)
             all_txt_supervisions = all_texts_output['text_feat']
-
 
         start_time = time.time()
         adv_imgs, last_adv_imgs = self.img_attacker.txt_guided_attack(self.model, imgs, txt2img,all_txt_supervisions, device,
@@ -82,6 +80,11 @@ class ImageAttacker():
         # print(it_labels)
         # print(a)
         loss_IaTcpos = -(it_sim_matrix * it_labels).sum(-1).mean()
+
+        # umap_loss_pos1 = - umap(adv_imgs_embeds,)
+        # umap_loss_pos2 = - umap(txts_embeds,)
+        # umap_loss = umap_loss_pos1 + args.gamma * umap_loss_pos2
+        
         loss = loss_IaTcpos
 
         return loss
