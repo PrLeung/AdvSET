@@ -142,15 +142,6 @@ class ImageAttacker():
             it_labels[txt2img[i], i] = 1
 
         loss_IaTcpos = -(it_sim_matrix * it_labels).sum(-1).mean()
-<<<<<<< HEAD
-
-        # umap_loss_pos1 = - umap(adv_imgs_embeds,)
-        # umap_loss_pos2 = - umap(txts_embeds,)
-        # umap_loss = umap_loss_pos1 + args.gamma * umap_loss_pos2
-        
-        loss = loss_IaTcpos
-=======
->>>>>>> 1a6cea43ce8e37afcb449e18c2ce98dcb4c3e5e5
 
         average_txt_embeds = average_and_concat(adv_imgs_embeds, txts_embeds, txt2img)
         umap_loss_pos1 = - umap(adv_imgs_embeds, imgs_embs)
