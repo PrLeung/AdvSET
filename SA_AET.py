@@ -91,6 +91,34 @@ class Attacker():
                                                        last_adv_img_embeds=last_adv_img_supervisions)
         return adv_imgs, adv_txts, execuate_time
 
+def replicate_and_concatenate(adv_imgs_embeds, txts_embeds, txt2img):
+    # 获取 k 的值（每个 adv_imgs_embeds 的张量需要复制的次数）
+    k = len(txt2img) // len(adv_imgs_embeds)
+    
+    # 验证 txt2img 的长度和 txts_embeds 的长度是否一致
+    assert len(txt2img) == len(txts_embeds), "txt2img 和 txts_embeds 的长度不一致"
+    
+    # 验证 txt2img 的值是否符合 k 的分布
+    expected_txt2img = [i // k for i in range(len(txt2img))]
+    assert txt2img == expected_txt2img, "txt2img 的格式不符合预期"
+    
+    # 复制每个 adv_imgs_embeds 的张量 k 次并拼接
+    replicated_embeds = adv_imgs_embeds.repeat_interleave(k, dim=0)
+    
+    return replicated_embeds
+
+def average_and_concat(adv_imgs_embeds, txts_embeds, txt2img):
+    # 验证 txts_embeds 的大小是 k 的整数倍
+    k = len(txt2img) // len(adv_imgs_embeds)
+    assert txts_embeds.shape[0] % k == 0, "txts_embeds 的第一维长度不是 k 的整数倍"
+    
+    # 计算 n 的大小
+    n = txts_embeds.shape[0] // k
+    
+    # 将 txts_embeds 按 k 分组并取平均
+    averaged_embeds = txts_embeds.view(n, k, -1).mean(dim=1)
+    
+    return averaged_embeds
 
 class ImageAttacker():
     def __init__(self, normalization, eps=2 / 255, steps=10, step_size=0.5 / 255, sample_numbers=5):
@@ -100,17 +128,11 @@ class ImageAttacker():
         self.step_size = step_size
         self.sample_numbers = sample_numbers
 
-    def loss_func(self, adv_imgs_embeds, txts_embeds, txt2img,all_txt_supervisions):
+    def loss_func(self, adv_imgs_embeds, imgs_embs, txts_embeds, txt2img,all_txt_supervisions):
         device = adv_imgs_embeds.device
 
         U, S, V = torch.svd(all_txt_supervisions.T.to(torch.float32))
-        # projection_matrix = U[:, :30] @ U[:, :30].t()
         projection_matrix = U[:, 1:len(U)] @ U[:, 1:len(U)].t() # 投影到语义空间
-        # projection_matrix = U @ U.t()
-        # print("txts_embeds.shape",txts_embeds.shape)
-        # print("len(txt2img)",len(txt2img))
-        # print("projection_matrix.shape",projection_matrix.shape)
-        # print(a)
 
         adv_imgs_embeds = adv_imgs_embeds @ projection_matrix
         txts_embeds = txts_embeds @ projection_matrix
@@ -120,14 +142,15 @@ class ImageAttacker():
 
         for i in range(len(txt2img)):
             it_labels[txt2img[i], i] = 1
-        # print(it_labels)
-        # print(a)
-        loss_IaTcpos = -(it_sim_matrix * it_labels).sum(-1).mean()
-        umap_loss_pos1 = - umap(adv_imgs_embeds, clean_output)
-        umap_loss_pos2 = - umap(adv_imgs_embeds, clean_output_text)
-        umap_loss = umap_loss_pos1 + args.gamma * umap_loss_pos2
-        loss = loss_IaTcpos
 
+        loss_IaTcpos = -(it_sim_matrix * it_labels).sum(-1).mean()
+
+        average_txt_embeds = average_and_concat(adv_imgs_embeds, txts_embeds, txt2img)
+        umap_loss_pos1 = - umap(adv_imgs_embeds, imgs_embs)
+        umap_loss_pos2 = - umap(adv_imgs_embeds, average_txt_embeds)
+        umap_loss = umap_loss_pos1 + 5*umap_loss_pos2
+        loss = loss_IaTcpos+umap_loss
+        # loss=loss_IaTcpos
         return loss
     
     def loss_func_old(self, adv_imgs_embeds, txts_embeds, txt2img):  
@@ -173,7 +196,9 @@ class ImageAttacker():
         # 加入高斯噪声
         adv_imgs = imgs.detach() + torch.from_numpy(np.random.uniform(-self.eps, self.eps, imgs.shape)).float().to(device)
         adv_imgs = torch.clamp(adv_imgs, 0.0, 1.0) # 限制在0-1之间
-
+        with torch.no_grad():
+            imgs_output=model.inference_image(imgs)
+            imgs_embeds=imgs_output['image_feat']
         last_adv_imgs = None
 
         start_time = time.time()
@@ -202,7 +227,7 @@ class ImageAttacker():
                     model.zero_grad()
                     with torch.enable_grad():
                         loss = torch.tensor(0.0, dtype=torch.float32).to(device)
-                        loss = self.loss_func(adv_imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
+                        loss = self.loss_func(adv_imgs_embeds, imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
                     adv_imgs.retain_grad()
                     loss.backward()
                     grad = adv_imgs.grad
@@ -223,7 +248,7 @@ class ImageAttacker():
                     model.zero_grad()
                     with torch.enable_grad():
                         loss = torch.tensor(0.0, dtype=torch.float32).to(device)
-                        loss = self.loss_func(adv_imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
+                        loss = self.loss_func(adv_imgs_embeds, imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
                     loss.backward()
                     loss_list.append(loss.item())
                 #candidate_index = loss_list.index(max(loss_list))
@@ -247,7 +272,7 @@ class ImageAttacker():
                 with torch.enable_grad():
                     loss = torch.tensor(0.0, dtype=torch.float32).to(device)
                     for i in range(5):
-                        loss_item = self.loss_func(adv_imgs_embeds[i * b:i * b + b], txt_embeds, txt2img,all_txt_supervisions)
+                        loss_item = self.loss_func(adv_imgs_embeds[i * b:i * b + b], imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
                         loss += loss_item
                 adv_imgs.retain_grad()
                 print("loss", loss)
@@ -276,7 +301,7 @@ class ImageAttacker():
                 with torch.enable_grad():
                     loss = torch.tensor(0.0, dtype=torch.float32).to(device)
                     for i in range(5):
-                        loss_item = self.loss_func(adv_imgs_embeds[i * b:i * b + b], txt_embeds, txt2img,all_txt_supervisions)
+                        loss_item = self.loss_func(adv_imgs_embeds[i * b:i * b + b], imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
                         loss += loss_item
                 loss.backward()
                 print("loss",loss)

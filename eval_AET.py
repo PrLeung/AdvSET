@@ -56,7 +56,7 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
     print('Computing features for evaluation adv...')
 
     images_normalize = transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711))
-    img_attacker = ImageAttacker(images_normalize, eps=8/255, steps=10, step_size=2/255)
+    img_attacker = ImageAttacker(images_normalize, eps=8/255, steps=15, step_size=2/255)
 
     max_length = 30 if args.source_model in ['ALBEF', 'TCL'] else 77 
     txt_attacker = TextAttacker(ref_model, tokenizer, cls=False, max_length=max_length, number_perturbation=1,
