@@ -1,6 +1,12 @@
 **/__pycache__
+<<<<<<< HEAD
 *.pth
 AdvCLIP/data/*
 *.pkl
+=======
+/checkpoints/*
+/datasets/*
+AdvCLIP/data/*
+>>>>>>> 1a6cea43ce8e37afcb449e18c2ce98dcb4c3e5e5
 *.jpg
 *.png

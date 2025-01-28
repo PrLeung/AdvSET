@@ -1,4 +1,8 @@
 numpy==1.23.3
 pandas==0.25.2
 tqdm==4.64.1
+<<<<<<< HEAD
 scipy
+=======
+scipy==1.7.1
+>>>>>>> 1a6cea43ce8e37afcb449e18c2ce98dcb4c3e5e5

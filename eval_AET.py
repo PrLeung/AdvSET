@@ -32,6 +32,8 @@ import time
 from SA_AET import Attacker, ImageAttacker, TextAttacker
 from dataset import paired_dataset
 
+
+
 def toImage(norm_img):
     pil_array = (norm_img * 255).to(torch.uint8).cpu().numpy()
     pil_img=Image.fromarray(np.transpose(pil_array, (1, 2, 0)))
@@ -54,7 +56,7 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
     print('Computing features for evaluation adv...')
 
     images_normalize = transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711))
-    img_attacker = ImageAttacker(images_normalize, eps=8/255, steps=10, step_size=2/255)
+    img_attacker = ImageAttacker(images_normalize, eps=8/255, steps=15, step_size=2/255)
 
     max_length = 30 if args.source_model in ['ALBEF', 'TCL'] else 77 
     txt_attacker = TextAttacker(ref_model, tokenizer, cls=False, max_length=max_length, number_perturbation=1,
@@ -386,6 +388,7 @@ def main(args, config):
     t_ref_models = []
     t_tokenizers = []
     t_model_names = copy.deepcopy(args.model_list)
+    print(t_model_names)
     t_model_names.remove(args.source_model)
     for t_model_name in t_model_names:
         t_model, t_ref_model, t_tokenizer = load_model(args,t_model_name, args.target_text_encoder, device)
@@ -443,7 +446,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', default=8, type=int)
     parser.add_argument('--cuda_id', default=0, type=int)
 
-    parser.add_argument('--model_list', type=str, nargs='+')
+    parser.add_argument('--model_list', nargs='+', type=str)
     parser.add_argument('--source_model', default='ALBEF', type=str)
     parser.add_argument('--source_text_encoder', default='bert-base-uncased', type=str)   
     parser.add_argument('--target_text_encoder', default='bert-base-uncased', type=str)
