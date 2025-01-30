@@ -6,15 +6,15 @@
         "name": "Python: My Script with Args",
         "type": "debugpy",
         "request": "launch",
-        "program": "${file}",  // 这里是你的 Python 脚本路径
+        "program": "eval_AET.py",  
         "args": [
-          "--config", "./configs/Retrieval_flickr.yaml",
+          "--config", "./configs/Retrieval_coco.yaml",
           "--cuda_id", "7",
           "--model_list", "ALBEF", "TCL", "CLIP_ViT", "CLIP_CNN",
           "--source_model", "CLIP_CNN",
-          "--albef_ckpt", "./checkpoints/albef_flickr.pth",
-          "--tcl_ckpt", "./checkpoints/tcl_flickr.pth",
-          "--original_rank_index_path", "./std_eval_idx/flickr30k/"
+          "--albef_ckpt", "./checkpoints/albef_coco.pth",
+          "--tcl_ckpt", "./checkpoints/tcl_coco.pth",
+          "--original_rank_index_path", "./std_eval_idx/coco/"
         ],
         "console": "integratedTerminal",
         "justMyCode": false
