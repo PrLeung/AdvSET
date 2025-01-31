@@ -114,6 +114,33 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
        #使用这些索引来选取张量中的数据
     all_texts = random.sample(all_texts_all, num_samples)
 
+    batch_size = 3000  # 每个批次的大小
+    n = len(all_texts)  # 总文本数量
+    # 初始化输出变量
+    all_texts_output = {
+        'text_embed': None,
+        'text_feat': None
+    }
+
+    # 按批次处理并合并
+    for i in range(0, n, batch_size):
+        batch_texts = all_texts[i:i+batch_size]  # 获取当前批次的文本
+        batch_texts_input = attacker.txt_attacker.tokenizer(batch_texts, padding='max_length', truncation=True,
+                                                        max_length=max_length, return_tensors="pt").to(device)
+        batch_texts_output = attacker.model.inference_text(batch_texts_input)
+        
+        # 如果all_texts_output为空，则初始化它
+        if all_texts_output['text_embed'] is None:
+            all_texts_output['text_embed'] = batch_texts_output['text_embed']
+            all_texts_output['text_feat'] = batch_texts_output['text_feat']
+        else:
+            # 否则直接合并当前批次的结果
+            all_texts_output['text_embed'] = torch.cat([all_texts_output['text_embed'], batch_texts_output['text_embed']], dim=0)
+            all_texts_output['text_feat'] = torch.cat([all_texts_output['text_feat'], batch_texts_output['text_feat']], dim=0)
+    all_txt_supervisions = all_texts_output['text_feat']
+
+    assert all_txt_supervisions.shape[0] == len(all_texts)
+
     for batch_idx, (images, texts_group, images_ids, text_ids_groups) in enumerate(data_loader):
         print(f'--------------------> batch:{batch_idx}/{len(data_loader)}')
         texts_ids = []
@@ -123,10 +150,9 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
             texts += texts_group[i]
             texts_ids += text_ids_groups[i]
             txt2img += [i]*len(text_ids_groups[i])
-
         images = images.to(device)
 
-        adv_images, adv_texts,execuate_time = attacker.attack(images, texts, txt2img, all_texts, device=device,
+        adv_images, adv_texts,execuate_time = attacker.attack(images, texts, txt2img,all_txt_supervisions, device=device,
                                                 max_length=max_length, scales=scales)
 
         with torch.no_grad():
@@ -443,7 +469,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='./configs/Retrieval_flickr.yaml')
     parser.add_argument('--seed', default=42, type=int)
-    parser.add_argument('--batch_size', default=8, type=int)
+    parser.add_argument('--batch_size', default=4, type=int)
     parser.add_argument('--cuda_id', default=0, type=int)
 
     parser.add_argument('--model_list', nargs='+', type=str)

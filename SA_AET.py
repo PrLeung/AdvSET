@@ -57,7 +57,7 @@ class Attacker():
         self.img_attacker = img_attacker
         self.txt_attacker = txt_attacker
 
-    def attack(self, imgs, txts, txt2img, all_texts, device='cpu', max_length=30, scales=None, masks=None, **kwargs):
+    def attack(self, imgs, txts, txt2img, all_txt_supervisions,device='cpu', max_length=30, scales=None, masks=None, **kwargs):
         with torch.no_grad():
             origin_img_output = self.model.inference_image(self.img_attacker.normalization(imgs))
             img_supervisions = origin_img_output['image_feat'][txt2img]
@@ -68,11 +68,10 @@ class Attacker():
                                                      max_length=max_length, return_tensors="pt").to(device)
             txts_output = self.model.inference_text(txts_input)
             txt_supervisions = txts_output['text_feat']
-            all_texts_input = self.txt_attacker.tokenizer(all_texts, padding='max_length', truncation=True,
-                                                     max_length=max_length, return_tensors="pt").to(device)
-            all_texts_output = self.model.inference_text(all_texts_input)
-            all_txt_supervisions = all_texts_output['text_feat']
-
+            # all_texts_input = self.txt_attacker.tokenizer(all_texts, padding='max_length', truncation=True,
+            #                                          max_length=max_length, return_tensors="pt").to(device)
+            # all_texts_output = self.model.inference_text(all_texts_input)
+            
         start_time = time.time()
         adv_imgs, last_adv_imgs = self.img_attacker.txt_guided_attack(self.model, imgs, txt2img,all_txt_supervisions, device,
                                                                       scales=scales, txt_embeds=txt_supervisions)
@@ -105,18 +104,38 @@ def replicate_and_concatenate(adv_imgs_embeds, txts_embeds, txt2img):
     
     return replicated_embeds
 
-def average_and_concat(adv_imgs_embeds, txts_embeds, txt2img):
-    # 验证 txts_embeds 的大小是 k 的整数倍
-    k = len(txt2img) // len(adv_imgs_embeds)
-    assert txts_embeds.shape[0] % k == 0, "txts_embeds 的第一维长度不是 k 的整数倍"
+import torch
+
+import torch
+
+def average_and_concat(txts_embeds, txt2img): 
+    # 获取分组的数量
+    num_groups = max(txt2img) + 1
     
-    # 计算 n 的大小
-    n = txts_embeds.shape[0] // k
+    # 创建一个列表，用来存储每组的平均嵌入
+    group_embeds = []
     
-    # 将 txts_embeds 按 k 分组并取平均
-    averaged_embeds = txts_embeds.view(n, k, -1).mean(dim=1)
+    # 遍历每个组
+    for i in range(num_groups):
+        # 找到属于该组的文本的索引
+        group_indices = [idx for idx, group in enumerate(txt2img) if group == i]
+        
+        # 获取该组的 txts_embeds
+        group_embed = txts_embeds[group_indices]
+        
+        # 对该组的嵌入取平均值
+        group_avg_embed = group_embed.mean(dim=0)  # 沿着第0维取平均
+        
+        # 将该组的平均嵌入添加到结果列表中
+        group_embeds.append(group_avg_embed)
     
-    return averaged_embeds
+    # 将每组的平均嵌入堆叠成一个张量
+    group_embeds_tensor = torch.stack(group_embeds)
+    
+    # 返回合并后的张量
+    return group_embeds_tensor
+
+
 
 class ImageAttacker():
     def __init__(self, normalization, eps=2 / 255, steps=10, step_size=0.5 / 255, sample_numbers=5):
@@ -130,8 +149,10 @@ class ImageAttacker():
         device = adv_imgs_embeds.device
 
         U, S, V = torch.svd(all_txt_supervisions.T.to(torch.float32))
+        U,S,V=U.half(),S.half(),V.half()
         projection_matrix = U[:, 1:len(U)] @ U[:, 1:len(U)].t() # 投影到语义空间
-
+        adv_imgs_embeds=adv_imgs_embeds.half()
+        txts_embeds=txts_embeds.half()
         adv_imgs_embeds = adv_imgs_embeds @ projection_matrix
         txts_embeds = txts_embeds @ projection_matrix
 
@@ -143,7 +164,7 @@ class ImageAttacker():
 
         loss_IaTcpos = -(it_sim_matrix * it_labels).sum(-1).mean()
 
-        average_txt_embeds = average_and_concat(adv_imgs_embeds, txts_embeds, txt2img)
+        average_txt_embeds = average_and_concat(txts_embeds, txt2img)
         umap_loss_pos1 = - umap(adv_imgs_embeds, imgs_embs)
         umap_loss_pos2 = - umap(adv_imgs_embeds, average_txt_embeds)
         umap_loss = umap_loss_pos1 + 5*umap_loss_pos2
@@ -192,7 +213,7 @@ class ImageAttacker():
         else:
             scales_num = len(scales) + 1
         # 加入高斯噪声
-        adv_imgs = imgs.detach() + torch.from_numpy(np.random.uniform(-self.eps, self.eps, imgs.shape)).float().to(device)
+        adv_imgs = imgs.detach() + torch.from_numpy(np.random.uniform(-self.eps, self.eps, imgs.shape)).half().to(device)
         adv_imgs = torch.clamp(adv_imgs, 0.0, 1.0) # 限制在0-1之间
         with torch.no_grad():
             imgs_output=model.inference_image(imgs)
@@ -224,7 +245,7 @@ class ImageAttacker():
                     adv_imgs_embeds = adv_imgs_output['image_feat']
                     model.zero_grad()
                     with torch.enable_grad():
-                        loss = torch.tensor(0.0, dtype=torch.float32).to(device)
+                        loss = torch.tensor(0.0, dtype=torch.float16).to(device)
                         loss = self.loss_func(adv_imgs_embeds, imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
                     adv_imgs.retain_grad()
                     loss.backward()
@@ -245,7 +266,7 @@ class ImageAttacker():
                     adv_imgs_embeds = adv_imgs_output['image_feat']
                     model.zero_grad()
                     with torch.enable_grad():
-                        loss = torch.tensor(0.0, dtype=torch.float32).to(device)
+                        loss = torch.tensor(0.0, dtype=torch.float16).to(device)
                         loss = self.loss_func(adv_imgs_embeds, imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
                     loss.backward()
                     loss_list.append(loss.item())
@@ -268,7 +289,7 @@ class ImageAttacker():
                 adv_imgs_embeds = adv_imgs_output['image_feat']
                 model.zero_grad()
                 with torch.enable_grad():
-                    loss = torch.tensor(0.0, dtype=torch.float32).to(device)
+                    loss = torch.tensor(0.0, dtype=torch.float16).to(device)
                     for i in range(5):
                         loss_item = self.loss_func(adv_imgs_embeds[i * b:i * b + b], imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
                         loss += loss_item
@@ -288,7 +309,6 @@ class ImageAttacker():
                 last_adv_imgs = adv_imgs.clone()
                 adv_imgs.requires_grad_()
                 scaled_imgs = self.get_scaled_imgs(adv_imgs, [0.5, 0.75, 1.25, 1.5], device)
-
                 if self.normalization is not None:
                     adv_imgs_output = model.inference_image(self.normalization(scaled_imgs))
                 else:
@@ -297,7 +317,7 @@ class ImageAttacker():
                 adv_imgs_embeds = adv_imgs_output['image_feat']
                 model.zero_grad()
                 with torch.enable_grad():
-                    loss = torch.tensor(0.0, dtype=torch.float32).to(device)
+                    loss = torch.tensor(0.0, dtype=torch.float16).to(device)
                     for i in range(5):
                         loss_item = self.loss_func(adv_imgs_embeds[i * b:i * b + b], imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
                         loss += loss_item
@@ -337,7 +357,7 @@ class ImageAttacker():
                            int(ratio * ori_shape[1]))
             scale_transform = transforms.Resize(scale_shape,
                                                 interpolation=transforms.InterpolationMode.BICUBIC)
-            scaled_imgs = imgs + torch.from_numpy(np.random.normal(0.0, 0.05, imgs.shape)).float().to(device)
+            scaled_imgs = imgs + torch.from_numpy(np.random.normal(0.0, 0.05, imgs.shape)).half().to(device)
             scaled_imgs = scale_transform(scaled_imgs)
             scaled_imgs = torch.clamp(scaled_imgs, 0.0, 1.0)
 
