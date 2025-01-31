@@ -44,3 +44,6 @@ Performance on TCL:
  {'txt_r1_ASR (txt_r1)': '41.2(56.6)', 'txt_r5_ASR (txt_r5)': '22.31(77.5)', 'txt_r10_ASR (txt_r10)': '16.13(83.7)', 'img_r1_ASR (img_r1)': '53.24(40.76)', 'img_r5_ASR (img_r5)': '33.8(64.32)', 'img_r10_ASR (img_r10)': '26.91(72.04)'}
 Performance on CLIP_CNN: 
  {'txt_r1_ASR (txt_r1)': '71.78(23.3)', 'txt_r5_ASR (txt_r5)': '53.28(44.5)', 'txt_r10_ASR (txt_r10)': '44.49(54.0)', 'img_r1_ASR (img_r1)': '75.64(15.84)', 'img_r5_ASR (img_r5)': '61.45(32.72)', 'img_r10_ASR (img_r10)': '53.47(41.78)'}
+
+
+

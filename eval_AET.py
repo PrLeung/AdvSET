@@ -1,6 +1,6 @@
 import argparse
 import os
-
+import pickle
 from ruamel.yaml import YAML
 
 yaml=YAML(typ='safe')
@@ -121,25 +121,25 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
         'text_embed': None,
         'text_feat': None
     }
+    with torch.no_grad():
+        # 按批次处理并合并
+        for i in range(0, n, batch_size):
+            batch_texts = all_texts[i:i+batch_size]  # 获取当前批次的文本
+            batch_texts_input = attacker.txt_attacker.tokenizer(batch_texts, padding='max_length', truncation=True,
+                                                            max_length=max_length, return_tensors="pt").to(device)
+            batch_texts_output = attacker.model.inference_text(batch_texts_input)
+            
+            # 如果all_texts_output为空，则初始化它
+            if all_texts_output['text_embed'] is None:
+                all_texts_output['text_embed'] = batch_texts_output['text_embed']
+                all_texts_output['text_feat'] = batch_texts_output['text_feat']
+            else:
+                # 否则直接合并当前批次的结果
+                all_texts_output['text_embed'] = torch.cat([all_texts_output['text_embed'], batch_texts_output['text_embed']], dim=0)
+                all_texts_output['text_feat'] = torch.cat([all_texts_output['text_feat'], batch_texts_output['text_feat']], dim=0)
+        all_txt_supervisions = all_texts_output['text_feat']
 
-    # 按批次处理并合并
-    for i in range(0, n, batch_size):
-        batch_texts = all_texts[i:i+batch_size]  # 获取当前批次的文本
-        batch_texts_input = attacker.txt_attacker.tokenizer(batch_texts, padding='max_length', truncation=True,
-                                                        max_length=max_length, return_tensors="pt").to(device)
-        batch_texts_output = attacker.model.inference_text(batch_texts_input)
-        
-        # 如果all_texts_output为空，则初始化它
-        if all_texts_output['text_embed'] is None:
-            all_texts_output['text_embed'] = batch_texts_output['text_embed']
-            all_texts_output['text_feat'] = batch_texts_output['text_feat']
-        else:
-            # 否则直接合并当前批次的结果
-            all_texts_output['text_embed'] = torch.cat([all_texts_output['text_embed'], batch_texts_output['text_embed']], dim=0)
-            all_texts_output['text_feat'] = torch.cat([all_texts_output['text_feat'], batch_texts_output['text_feat']], dim=0)
-    all_txt_supervisions = all_texts_output['text_feat']
-
-    assert all_txt_supervisions.shape[0] == len(all_texts)
+        assert all_txt_supervisions.shape[0] == len(all_texts)
 
     for batch_idx, (images, texts_group, images_ids, text_ids_groups) in enumerate(data_loader):
         print(f'--------------------> batch:{batch_idx}/{len(data_loader)}')
@@ -193,6 +193,7 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
                     output = t_model.inference(t_adv_images_norm, adv_texts)
                     t_feat_dict['t_image_feats'][images_ids] = output['image_feat'].cpu().float().detach()
                     t_feat_dict['t_text_feats'][texts_ids] = output['text_feat'].cpu().float().detach()
+
     s_score_matrix_i2t = None
     s_score_matrix_t2i = None
     if args.source_model in ['ALBEF', 'TCL']:
@@ -271,6 +272,10 @@ def retrieval_score(model, image_feats, image_embeds, text_feats, text_embeds, t
 @torch.no_grad()
 def itm_eval(scores_i2t, scores_t2i, img2txt, txt2img, model_name):
     # Images->Text
+    with open(f'./temp/{model_name}_scores_i2t.pkl', 'wb') as file:
+        pickle.dump(scores_i2t, file)
+    with open(f'./temp/{model_name}_scores_t2i.pkl', 'wb') as file:
+        pickle.dump(scores_t2i, file)
     ranks = np.zeros(scores_i2t.shape[0])
     for index, score in enumerate(scores_i2t):
         inds = np.argsort(score)[::-1]
