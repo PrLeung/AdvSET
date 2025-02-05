@@ -1,6 +1,6 @@
 export http_proxy=http://127.0.0.1:7890;export https_proxy=http://127.0.0.1:7890
 python eval_AET.py --config ./configs/Retrieval_coco.yaml \
-	--cuda_id 6 \
+	--cuda_id 1 \
 	--model_list ALBEF TCL CLIP_ViT CLIP_CNN \
 	--source_model ALBEF \
 	--albef_ckpt ./checkpoints/albef_coco.pth \
