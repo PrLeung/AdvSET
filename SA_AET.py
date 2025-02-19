@@ -185,12 +185,12 @@ class ImageAttacker():
         self.step_size = step_size
         self.sample_numbers = sample_numbers
 
-    def loss_func(self, adv_imgs_embeds, imgs_embs, txts_embeds, txt2img,all_txt_supervisions):
+    def loss_func(self, adv_imgs_embeds, imgs_embs, txts_embeds, txt2img,projection_matrix):
         device = adv_imgs_embeds.device
 
-        U, S, V = torch.svd(all_txt_supervisions.T.to(torch.float32))
-        U,S,V=U.half(),S.half(),V.half()
-        projection_matrix = U[:, 1:len(U)] @ U[:, 1:len(U)].t() # 投影到语义空间
+        # U, S, V = torch.svd(all_txt_supervisions.T.to(torch.float32))
+        # U,S,V=U.half(),S.half(),V.half()
+        # projection_matrix = U[:, 1:len(U)] @ U[:, 1:len(U)].t() # 投影到语义空间
         adv_imgs_embeds=adv_imgs_embeds.half()
         txts_embeds=txts_embeds.half()
         adv_imgs_embeds = adv_imgs_embeds @ projection_matrix
@@ -242,7 +242,7 @@ class ImageAttacker():
 
         return (num1, num2, num3)
 
-    def txt_guided_attack(self, model, imgs, txt2img, all_txt_supervisions,device, scales=None, txt_embeds=None):
+    def txt_guided_attack(self, model, imgs, txt2img, projection_matrix,device, scales=None, txt_embeds=None):
 
         model.eval()
 
@@ -262,84 +262,36 @@ class ImageAttacker():
 
         start_time = time.time()
         ratio_list = []
-        transformation_net = AdversarialTransformation().cuda()
-        optimizer_T = optim.Adam(transformation_net.parameters(), lr=0.001)
-        num_iters=10
-        for _ in range(num_iters):
-            for step in range(self.steps):  # self.steps=10
-                if last_adv_imgs != None:
-                    samples = []
-                    clone_adv_imgs = adv_imgs.clone()
-                    loss_list = []
-                    for k in range(self.sample_numbers):
-                        samples.append(self.rand3Num()) # 生成三个随机数
+        # transformation_net = AdversarialTransformation().cuda()
+        # optimizer_T = optim.Adam(transformation_net.parameters(), lr=0.001)
+        # num_iters=10
+        # for _ in range(num_iters):
+        for step in range(self.steps):  # self.steps=10
+            if last_adv_imgs != None:
+                samples = []
+                clone_adv_imgs = adv_imgs.clone()
+                loss_list = []
+                for k in range(self.sample_numbers):
+                    samples.append(self.rand3Num()) # 生成三个随机数
 
-                    for sample in samples:
-                        # 进行采样
-                        adv_imgs = (sample[0] / 100) * clone_adv_imgs + (sample[1] / 100) * imgs + (
-                                    sample[2] / 100) * last_adv_imgs # sk = λ · xI + β ·  ̃xi−1I + γ ·  ̃xi I
-                        adv_imgs.requires_grad_()
-
-                        if self.normalization is not None:
-                            adv_imgs_output = model.inference_image(self.normalization(adv_imgs))
-                        else:
-                            adv_imgs_output = model.inference_image(adv_imgs)
-
-                        adv_imgs_embeds = adv_imgs_output['image_feat']
-                        model.zero_grad()
-                        with torch.enable_grad():
-                            loss = torch.tensor(0.0, dtype=torch.float16).to(device)
-                            loss = self.loss_func(adv_imgs_embeds, imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
-                        adv_imgs.retain_grad()
-                        loss.backward()
-                        grad = adv_imgs.grad
-                        grad = grad / torch.mean(torch.abs(grad), dim=(1, 2, 3), keepdim=True)
-                        perturbation = self.step_size * grad.sign()
-
-                        adv_imgs = clone_adv_imgs.detach() + perturbation
-                        adv_imgs = torch.min(torch.max(adv_imgs, imgs - self.eps), imgs + self.eps)
-                        adv_imgs = torch.clamp(adv_imgs, 0.0, 1.0)
-
-
-
-                        if self.normalization is not None:
-                            adv_imgs_output = model.inference_image(self.normalization(adv_imgs))
-                        else:
-                            adv_imgs_output = model.inference_image(adv_imgs)
-                        adv_imgs_embeds = adv_imgs_output['image_feat']
-                        model.zero_grad()
-                        with torch.enable_grad():
-                            loss = torch.tensor(0.0, dtype=torch.float16).to(device)
-                            loss = self.loss_func(adv_imgs_embeds, imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
-                        loss.backward()
-                        loss_list.append(loss.item())
-                    #candidate_index = loss_list.index(max(loss_list))
-
-                    candidate_index = loss_list.index(max(loss_list))
-                    ratio_list.append(samples[candidate_index])
-
-                    adv_imgs = (samples[candidate_index][0] / 100) * clone_adv_imgs + (
-                                samples[candidate_index][1] / 100) * imgs + (
-                                        samples[candidate_index][2] / 100) * last_adv_imgs
+                for sample in samples:
+                    # 进行采样
+                    adv_imgs = (sample[0] / 100) * clone_adv_imgs + (sample[1] / 100) * imgs + (
+                                sample[2] / 100) * last_adv_imgs # sk = λ · xI + β ·  ̃xi−1I + γ ·  ̃xi I
                     adv_imgs.requires_grad_()
-                    scaled_imgs = self.get_scaled_imgs(adv_imgs, [0.5, 0.75, 1.25, 1.5], device)
 
                     if self.normalization is not None:
-                        adv_imgs_output = model.inference_image(self.normalization(scaled_imgs))
+                        adv_imgs_output = model.inference_image(self.normalization(adv_imgs))
                     else:
-                        adv_imgs_output = model.inference_image(scaled_imgs)
+                        adv_imgs_output = model.inference_image(adv_imgs)
 
                     adv_imgs_embeds = adv_imgs_output['image_feat']
                     model.zero_grad()
                     with torch.enable_grad():
                         loss = torch.tensor(0.0, dtype=torch.float16).to(device)
-                        for i in range(5):
-                            loss_item = self.loss_func(adv_imgs_embeds[i * b:i * b + b], imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
-                            loss += loss_item
+                        loss = self.loss_func(adv_imgs_embeds, imgs_embeds, txt_embeds, txt2img,projection_matrix)
                     adv_imgs.retain_grad()
-                    print("loss", loss)
                     loss.backward()
-
                     grad = adv_imgs.grad
                     grad = grad / torch.mean(torch.abs(grad), dim=(1, 2, 3), keepdim=True)
                     perturbation = self.step_size * grad.sign()
@@ -347,31 +299,79 @@ class ImageAttacker():
                     adv_imgs = clone_adv_imgs.detach() + perturbation
                     adv_imgs = torch.min(torch.max(adv_imgs, imgs - self.eps), imgs + self.eps)
                     adv_imgs = torch.clamp(adv_imgs, 0.0, 1.0)
-                    last_adv_imgs = clone_adv_imgs.clone()
-                else:
-                    last_adv_imgs = adv_imgs.clone()
-                    adv_imgs.requires_grad_()
-                    scaled_imgs = self.get_scaled_imgs(adv_imgs, [0.5, 0.75, 1.25, 1.5], device)
-                    if self.normalization is not None:
-                        adv_imgs_output = model.inference_image(self.normalization(scaled_imgs))
-                    else:
-                        adv_imgs_output = model.inference_image(scaled_imgs)
 
+
+
+                    if self.normalization is not None:
+                        adv_imgs_output = model.inference_image(self.normalization(adv_imgs))
+                    else:
+                        adv_imgs_output = model.inference_image(adv_imgs)
                     adv_imgs_embeds = adv_imgs_output['image_feat']
                     model.zero_grad()
                     with torch.enable_grad():
                         loss = torch.tensor(0.0, dtype=torch.float16).to(device)
-                        for i in range(5):
-                            loss_item = self.loss_func(adv_imgs_embeds[i * b:i * b + b], imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
-                            loss += loss_item
+                        loss = self.loss_func(adv_imgs_embeds, imgs_embeds, txt_embeds, txt2img,projection_matrix)
                     loss.backward()
-                    print("loss",loss)
-                    grad = adv_imgs.grad
-                    grad = grad / torch.mean(torch.abs(grad), dim=(1, 2, 3), keepdim=True)
-                    perturbation = self.step_size * grad.sign()
-                    adv_imgs = adv_imgs.detach() + perturbation
-                    adv_imgs = torch.min(torch.max(adv_imgs, imgs - self.eps), imgs + self.eps)
-                    adv_imgs = torch.clamp(adv_imgs, 0.0, 1.0)
+                    loss_list.append(loss.item())
+                #candidate_index = loss_list.index(max(loss_list))
+
+                candidate_index = loss_list.index(max(loss_list))
+                ratio_list.append(samples[candidate_index])
+
+                adv_imgs = (samples[candidate_index][0] / 100) * clone_adv_imgs + (
+                            samples[candidate_index][1] / 100) * imgs + (
+                                    samples[candidate_index][2] / 100) * last_adv_imgs
+                adv_imgs.requires_grad_()
+                scaled_imgs = self.get_scaled_imgs(adv_imgs, [0.5, 0.75, 1.25, 1.5], device)
+
+                if self.normalization is not None:
+                    adv_imgs_output = model.inference_image(self.normalization(scaled_imgs))
+                else:
+                    adv_imgs_output = model.inference_image(scaled_imgs)
+
+                adv_imgs_embeds = adv_imgs_output['image_feat']
+                model.zero_grad()
+                with torch.enable_grad():
+                    loss = torch.tensor(0.0, dtype=torch.float16).to(device)
+                    for i in range(5):
+                        loss_item = self.loss_func(adv_imgs_embeds[i * b:i * b + b], imgs_embeds, txt_embeds, txt2img,projection_matrix)
+                        loss += loss_item
+                adv_imgs.retain_grad()
+                print("loss", loss)
+                loss.backward()
+
+                grad = adv_imgs.grad
+                grad = grad / torch.mean(torch.abs(grad), dim=(1, 2, 3), keepdim=True)
+                perturbation = self.step_size * grad.sign()
+
+                adv_imgs = clone_adv_imgs.detach() + perturbation
+                adv_imgs = torch.min(torch.max(adv_imgs, imgs - self.eps), imgs + self.eps)
+                adv_imgs = torch.clamp(adv_imgs, 0.0, 1.0)
+                last_adv_imgs = clone_adv_imgs.clone()
+            else:
+                last_adv_imgs = adv_imgs.clone()
+                adv_imgs.requires_grad_()
+                scaled_imgs = self.get_scaled_imgs(adv_imgs, [0.5, 0.75, 1.25, 1.5], device)
+                if self.normalization is not None:
+                    adv_imgs_output = model.inference_image(self.normalization(scaled_imgs))
+                else:
+                    adv_imgs_output = model.inference_image(scaled_imgs)
+
+                adv_imgs_embeds = adv_imgs_output['image_feat']
+                model.zero_grad()
+                with torch.enable_grad():
+                    loss = torch.tensor(0.0, dtype=torch.float16).to(device)
+                    for i in range(5):
+                        loss_item = self.loss_func(adv_imgs_embeds[i * b:i * b + b], imgs_embeds, txt_embeds, txt2img,projection_matrix)
+                        loss += loss_item
+                loss.backward()
+                print("loss",loss)
+                grad = adv_imgs.grad
+                grad = grad / torch.mean(torch.abs(grad), dim=(1, 2, 3), keepdim=True)
+                perturbation = self.step_size * grad.sign()
+                adv_imgs = adv_imgs.detach() + perturbation
+                adv_imgs = torch.min(torch.max(adv_imgs, imgs - self.eps), imgs + self.eps)
+                adv_imgs = torch.clamp(adv_imgs, 0.0, 1.0)
             # x_transformed_adv = transformation_net(x_adv)
             # x_transformed_clean = transformation_net(x_clean)
             # loss_T = self.loss_func(adv_imgs_embeds, imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)

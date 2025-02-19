@@ -31,8 +31,46 @@ import time
 
 from SA_AET import Attacker, ImageAttacker, TextAttacker
 from dataset import paired_dataset
+from sklearn.cluster import KMeans
 
+def get_projection_matrix(all_txt_supervisions): 
+    """
+    计算基于文本特征的投影矩阵
+    :param all_txt_supervisions: n * d 的矩阵，表示所有文本的特征
+    :return: 返回最终的投影矩阵
+    """
+    
+    # Step 1: 聚类文本特征
+    num_clusters = 10  # 设置簇的数量，根据需求调整
+    kmeans = KMeans(n_clusters=num_clusters)
+    kmeans.fit(all_txt_supervisions.cpu().numpy())  # 使用 KMeans 聚类
+    cluster_labels = kmeans.labels_  # 得到每个文本的簇标签
+    
+    # Step 2: 为每个簇计算投影矩阵（使用SVD）
+    cluster_projection_matrices = []
+    for cluster_id in range(num_clusters):
+        # 获取当前簇的所有文本索引
+        cluster_indices = np.where(cluster_labels == cluster_id)[0]
+        cluster_embeddings = all_txt_supervisions[cluster_indices]  # 当前簇的所有文本特征
+        
+        # 进行SVD分解
+        U, S, V = torch.svd(all_txt_supervisions.T.to(torch.float32))
+        U,S,V=U.half(),S.half(),V.half()
+        projection_matrix = U[:, 1:len(U)] @ U[:, 1:len(U)].t() # 投影到语义空间
+        cluster_projection_matrices.append(projection_matrix)
 
+    # Step 3: 加权组合投影矩阵
+    total_samples = len(all_txt_supervisions)
+    weights = [len(np.where(cluster_labels == cluster_id)[0]) / total_samples for cluster_id in range(num_clusters)]
+    
+    # 加权组合所有簇的投影矩阵
+    final_projection_matrix = np.zeros_like(cluster_projection_matrices[0].cpu())
+    for i, projection_matrix in enumerate(cluster_projection_matrices):
+        projection_matrix = projection_matrix.cpu().numpy()  # 将PyTorch张量转换为NumPy数组
+        final_projection_matrix += weights[i] * projection_matrix
+
+    # 返回计算得到的投影矩阵
+    return torch.tensor(final_projection_matrix).to(all_txt_supervisions.device)
 
 def toImage(norm_img):
     pil_array = (norm_img * 255).to(torch.uint8).cpu().numpy()
@@ -141,6 +179,7 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
 
         assert all_txt_supervisions.shape[0] == len(all_texts)
 
+    projection_matrix=get_projection_matrix(all_txt_supervisions)
     for batch_idx, (images, texts_group, images_ids, text_ids_groups) in enumerate(data_loader):
         print(f'--------------------> batch:{batch_idx}/{len(data_loader)}')
         texts_ids = []
@@ -152,7 +191,7 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
             txt2img += [i]*len(text_ids_groups[i])
         images = images.to(device)
 
-        adv_images, adv_texts,execuate_time = attacker.attack(images, texts, txt2img,all_txt_supervisions, device=device,
+        adv_images, adv_texts,execuate_time = attacker.attack(images, texts, txt2img,projection_matrix, device=device,
                                                 max_length=max_length, scales=scales)
 
         with torch.no_grad():
@@ -381,7 +420,7 @@ def eval_asr(model, ref_model, tokenizer, t_models, t_ref_models, t_tokenizers, 
                                                                    data_loader, tokenizer, t_tokenizers, device, args,config)
 
 
-    result_file_path = "./result.txt"
+    result_file_path = "./result_kmeans.txt"
 
     with open(result_file_path, "a") as file:
         file.write("\n") 
