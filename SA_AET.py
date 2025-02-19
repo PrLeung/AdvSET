@@ -144,9 +144,6 @@ def replicate_and_concatenate(adv_imgs_embeds, txts_embeds, txt2img):
     
     return replicated_embeds
 
-import torch
-
-import torch
 
 def average_and_concat(txts_embeds, txt2img): 
     # 获取分组的数量
