@@ -33,6 +33,7 @@ from SA_AET import Attacker, ImageAttacker, TextAttacker
 from dataset import paired_dataset
 from sklearn.cluster import KMeans
 
+
 def get_projection_matrix(all_txt_supervisions): 
     """
     计算基于文本特征的投影矩阵
@@ -503,7 +504,11 @@ def main(args, config):
             ])
             t_test_transforms.append(t_test_transform)
     
-    test_dataset = paired_dataset(config['test_file'], s_test_transform, config['image_root'])
+    if args.source_model in ['ALBEF', 'TCL']:
+        test_dataset = paired_dataset(config['test_file'], s_test_transform, config['image_root'], config['fused_image_root'], config['fused_attn_root'])
+    else:
+        test_dataset = paired_dataset(config['test_file'], s_test_transform, config['image_root'], config['aligned_image_root'], config['aligned_attn_root'])
+    return
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size,
                              num_workers=4, collate_fn=test_dataset.collate_fn)
 

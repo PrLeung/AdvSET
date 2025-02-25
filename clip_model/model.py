@@ -5,7 +5,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
-from .auxilary import *
+
+from models.clip_model import clip
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -67,7 +68,7 @@ class AttentionPool2d(nn.Module):
         x = x.reshape(x.shape[0], x.shape[1], x.shape[2] * x.shape[3]).permute(2, 0, 1)  # NCHW -> (HW)NC
         x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
         x = x + self.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
-        x, _ = multi_head_attention_forward(
+        x, _ = F.multi_head_attention_forward(
             query=x, key=x, value=x,
             embed_dim_to_check=x.shape[-1],
             num_heads=self.num_heads,
@@ -155,7 +156,7 @@ class LayerNorm(nn.LayerNorm):
 
     def forward(self, x: torch.Tensor):
         orig_type = x.dtype
-        ret = super().forward(x.type(torch.float32))
+        ret = super().forward(x.type(torch.float16))
         return ret.type(orig_type)
 
 
@@ -164,21 +165,31 @@ class QuickGELU(nn.Module):
         return x * torch.sigmoid(1.702 * x)
 
 
+import torch
+import torch.nn as nn
+from collections import OrderedDict
+
+
+
 class ResidualAttentionBlock(nn.Module):
     def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None):
         super().__init__()
 
-        self.attn = MultiheadAttention(d_model, n_head)
-        self.ln_1 = LayerNorm(d_model)
+        self.attn = nn.MultiheadAttention(d_model, n_head)
+        self.ln_1 = nn.LayerNorm(d_model)
         self.mlp = nn.Sequential(OrderedDict([
             ("c_fc", nn.Linear(d_model, d_model * 4)),
-            ("gelu", QuickGELU()),
+            ("gelu", nn.GELU()),
             ("c_proj", nn.Linear(d_model * 4, d_model))
         ]))
-        self.ln_2 = LayerNorm(d_model)
+        self.ln_2 = nn.LayerNorm(d_model)
         self.attn_mask = attn_mask
+        self.attn_probs = None  # 添加此行以存储注意力权重
 
-        self.attn_probs = None
+    # def attention(self, x: torch.Tensor):
+    #     self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None
+    #     output, self.attn_probs = self.attn(x, x, x, need_weights=True, attn_mask=self.attn_mask)
+    #     return output
         self.attn_grad = None
 
     def set_attn_probs(self, attn_probs):
@@ -192,10 +203,12 @@ class ResidualAttentionBlock(nn.Module):
         return self.attn(x, x, x, need_weights=False, attn_mask=self.attn_mask, attention_probs_forward_hook=self.set_attn_probs,
                          attention_probs_backwards_hook=self.set_attn_grad)[0]
 
+
     def forward(self, x: torch.Tensor):
         x = x + self.attention(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
+
 
 
 class Transformer(nn.Module):
@@ -209,7 +222,7 @@ class Transformer(nn.Module):
         return self.resblocks(x)
 
 
-class VisualTransformer(nn.Module):
+class VisionTransformer(nn.Module):
     def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int):
         super().__init__()
         self.input_resolution = input_resolution
@@ -245,6 +258,20 @@ class VisualTransformer(nn.Module):
 
         return x
 
+    def inference(self, x: torch.Tensor):
+        x = self.conv1(x)  # shape = [*, width, grid, grid]
+        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+        x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+        x = x + self.positional_embedding.to(x.dtype)
+        x = self.ln_pre(x)
+
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        x = self.ln_post(x)
+        return x
 
 class CLIP(nn.Module):
     def __init__(self,
@@ -276,7 +303,7 @@ class CLIP(nn.Module):
             )
         else:
             vision_heads = vision_width // 64
-            self.visual = VisualTransformer(
+            self.visual = VisionTransformer(
                 input_resolution=image_resolution,
                 patch_size=vision_patch_size,
                 width=vision_width,
@@ -372,11 +399,40 @@ class CLIP(nn.Module):
         # cosine similarity as logits
         logit_scale = self.logit_scale.exp()
         logits_per_image = logit_scale * image_features @ text_features.t()
-        logits_per_text = logit_scale * text_features @ image_features.t()
+        logits_per_text = logits_per_image.t()
 
         # shape = [global_batch_size, global_batch_size]
         return logits_per_image, logits_per_text
 
+    def inference_image(self, image):
+        #return {'image_embed': self.visual.inference(image)}
+        image_embed = self.encode_image(image)
+        image_feat = F.normalize(image_embed, dim=-1)
+        return {'image_embed': image_embed,
+                'image_feat': image_feat,
+                }
+
+    def inference_text(self, text_input):
+        text = []
+        for input_ids in text_input.input_ids:
+            t = self.tokenizer.decode(input_ids).replace('[PAD]', '').replace('[CLS]', '').replace('[SEP]', '').strip()
+            text.append(t)
+        text_input = clip.tokenize(text, 77, True).to(self.logit_scale.device)
+        txt_embed = self.encode_text(text_input)
+        text_feat = F.normalize(txt_embed, dim=-1)
+        return {'text_embed': txt_embed,
+                'text_feat': text_feat,}
+
+    def inference(self, image, text):
+        text_input = clip.tokenize(text, 77, True).to(self.logit_scale.device)
+        image_features = self.encode_image(image)
+        text_features = self.encode_text(text_input)
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        return {'text_feat': text_features, 'image_feat': image_features}
+
+    def set_tokenizer(self, tokenizer):
+        self.tokenizer = tokenizer
 
 def convert_weights(model: nn.Module):
     """Convert applicable model parameters to fp16"""
@@ -387,7 +443,7 @@ def convert_weights(model: nn.Module):
             if l.bias is not None:
                 l.bias.data = l.bias.data.half()
 
-        if isinstance(l, MultiheadAttention):
+        if isinstance(l, nn.MultiheadAttention):
             for attr in [*[f"{s}_proj_weight" for s in ["in", "q", "k", "v"]], "in_proj_bias", "bias_k", "bias_v"]:
                 tensor = getattr(l, attr)
                 if tensor is not None:

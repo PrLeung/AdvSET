@@ -1,6 +1,9 @@
 test_file: './data_annotation/flickr30k_test.json'
 image_root: './datasets/'
-
+aligned_image_root: 'aligned_dataset/'
+aligned_attn_root: 'aligned_attention/'
+fused_image_root: 'fused_dataset/'
+fused_attn_root: 'fused_attention/'
 bert_config: './configs/config_bert.json'
 
 image_res: 384

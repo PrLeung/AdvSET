@@ -1,24 +1,40 @@
 {
-    "version": "0.2.0",
-    "configurations": [
-      
-      {
-        "name": "Python: My Script with Args",
-        "type": "debugpy",
-        "request": "launch",
-        "program": "eval_AET.py",  
-        "args": [
-          "--config", "./configs/Retrieval_coco.yaml",
-          "--cuda_id", "7",
-          "--model_list", "ALBEF", "TCL", "CLIP_ViT", "CLIP_CNN",
-          "--source_model", "CLIP_CNN",
-          "--albef_ckpt", "./checkpoints/albef_coco.pth",
-          "--tcl_ckpt", "./checkpoints/tcl_coco.pth",
-          "--original_rank_index_path", "./std_eval_idx/coco/"
-        ],
-        "console": "integratedTerminal",
-        "justMyCode": false
-      }
-    ]
-  }
-  
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python 调试程序: 当前文件",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Python: My Script with Args",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "eval_AET.py",
+      "args": [
+        "--config",
+        "./configs/Retrieval_flickr.yaml",
+        "--cuda_id",
+        "2",
+        "--model_list",
+        "ALBEF",
+        "TCL",
+        "CLIP_ViT",
+        "CLIP_CNN",
+        "--source_model",
+        "ALBEF",
+        "--albef_ckpt",
+        "./checkpoints/albef_flickr.pth",
+        "--tcl_ckpt",
+        "./checkpoints/tcl_flickr.pth",
+        "--original_rank_index_path",
+        "./std_eval_idx/flickr30k/"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}

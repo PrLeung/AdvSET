@@ -13,41 +13,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-class AdversarialTransformation(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(3, 16, 3, padding=1),
-            nn.LeakyReLU(),
-            nn.Conv2d(16, 3, 3, padding=1)
-        )
-    def forward(self, x):
-        return self.conv(x)
 
-def atta_attack(model, x_clean, y_true, epsilon=16/255, num_iters=10):
-    transformation_net = AdversarialTransformation().cuda()
-    optimizer_T = optim.Adam(transformation_net.parameters(), lr=0.001)
-    x_adv = x_clean.clone().detach().requires_grad_(True)
-    
-    # 训练对抗性变换网络
-    for _ in range(num_iters):
-        # 内循环：更新对抗样本
-        for _ in range(num_iters):
-            x_transformed = transformation_net(x_adv)
-            loss_fool = -nn.CrossEntropyLoss()(model(x_transformed), y_true) - 1.0 * nn.CrossEntropyLoss()(model(x_adv), y_true)
-            loss_fool.backward()
-            x_adv = x_adv + epsilon / num_iters * x_adv.grad.sign()
-            x_adv = torch.clamp(x_adv, x_clean - epsilon, x_clean + epsilon).detach_()
-        
-        # 外循环：更新变换网络
-        x_transformed_adv = transformation_net(x_adv)
-        x_transformed_clean = transformation_net(x_clean)
-        loss_T = nn.CrossEntropyLoss()(model(x_transformed_adv), y_true) + 1.0 * nn.CrossEntropyLoss()(model(x_transformed_clean), y_true) + 10.0 * torch.norm(x_adv - x_transformed_adv, p=2)
-        optimizer_T.zero_grad()
-        loss_T.backward()
-        optimizer_T.step()
-    
-    return x_adv
 
 def KL(P,Q,mask=None):
     eps = 0.0000001
@@ -90,6 +56,8 @@ def umap(output_net, target_net, eps=0.0000001):
     # Calculate the KL-divergence
     loss = CE(target_similarity,model_similarity)
     return loss
+
+
 
 class Attacker():
     def __init__(self, model, img_attacker, txt_attacker):
@@ -259,10 +227,7 @@ class ImageAttacker():
 
         start_time = time.time()
         ratio_list = []
-        # transformation_net = AdversarialTransformation().cuda()
-        # optimizer_T = optim.Adam(transformation_net.parameters(), lr=0.001)
-        # num_iters=10
-        # for _ in range(num_iters):
+
         for step in range(self.steps):  # self.steps=10
             if last_adv_imgs != None:
                 samples = []
