@@ -13,6 +13,56 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+import torch
+
+import torch
+
+import torch
+
+def dynamic_scaling(A, gamma=2.0, mode='linear'):
+    """注意力矩阵动态范围调整"""
+    if mode == 'linear':
+        return (A - 0.5) * 2 * gamma + 1  # 线性扩展
+    elif mode == 'exponential':
+        return torch.exp(gamma * (A - 0.5))  # 指数增强
+    else:
+        raise ValueError("Unsupported scaling mode")
+
+def get_weighted_perturbation(delta, attention_matrix, 
+                            gamma=1.0, mode='linear',
+                            epsilon_constraint=None):
+    """生成加权扰动"""
+    # 将 attention_matrix 从 tuple 转换为 [batch, h, w] 张量
+    attention_matrix = torch.stack(attention_matrix, dim=0)
+    
+    # 维度验证
+    assert attention_matrix.shape[0] == delta.shape[0], \
+        f"注意力矩阵的批次维度 {attention_matrix.shape[0]} 应与扰动的批次维度 {delta.shape[0]} 匹配"
+    assert attention_matrix.shape[1:] == delta.shape[2:], \
+        f"注意力矩阵的空间维度 {attention_matrix.shape[1:]} 应与扰动的空间维度 {delta.shape[2:]} 匹配"
+    
+    # 动态范围调整
+    scaled_A = dynamic_scaling(attention_matrix, gamma, mode)
+    
+    # 扩展并广播注意力矩阵以匹配 delta 的维度
+    A = scaled_A.unsqueeze(1).to(delta.device)  # 变为 [batch, 1, h, w]
+    A = A.expand_as(delta)  # 自动广播到与delta相同尺寸 [batch, c, h, w]
+    
+    # 将 delta 映射到 [0, 2] 的范围
+    delta_scaled = delta * 2  # 将 delta 从 [0, 1] 映射到 [0, 2]
+    
+    # 应用注意力加权
+    weighted_delta = delta_scaled * A
+    
+    # 强度约束处理
+    if epsilon_constraint is not None:
+        current_max = weighted_delta.abs().max().item()
+        weighted_delta = (weighted_delta / current_max) * epsilon_constraint
+    
+    return weighted_delta
+
+
+
 
 
 def KL(P,Q,mask=None):
@@ -65,7 +115,7 @@ class Attacker():
         self.img_attacker = img_attacker
         self.txt_attacker = txt_attacker
 
-    def attack(self, imgs, txts, txt2img, all_txt_supervisions,device='cpu', max_length=30, scales=None, masks=None, **kwargs):
+    def attack(self, imgs, txts, txt2img, all_txt_supervisions,device='cpu', max_length=30, scales=None, attn_matrices=None, masks=None, **kwargs):
         with torch.no_grad():
             origin_img_output = self.model.inference_image(self.img_attacker.normalization(imgs))
             img_supervisions = origin_img_output['image_feat'][txt2img]
@@ -82,7 +132,7 @@ class Attacker():
             
         start_time = time.time()
         adv_imgs, last_adv_imgs = self.img_attacker.txt_guided_attack(self.model, imgs, txt2img,all_txt_supervisions, device,
-                                                                      scales=scales, txt_embeds=txt_supervisions)
+                                                                      scales=scales, txt_embeds=txt_supervisions, attn_matrices=attn_matrices)
         end_time = time.time()
         execuate_time = end_time - start_time
 
@@ -207,7 +257,7 @@ class ImageAttacker():
 
         return (num1, num2, num3)
 
-    def txt_guided_attack(self, model, imgs, txt2img, projection_matrix,device, scales=None, txt_embeds=None):
+    def txt_guided_attack(self, model, imgs, txt2img, projection_matrix,device, scales=None, txt_embeds=None, attn_matrices=None):
 
         model.eval()
 
@@ -257,6 +307,14 @@ class ImageAttacker():
                     grad = adv_imgs.grad
                     grad = grad / torch.mean(torch.abs(grad), dim=(1, 2, 3), keepdim=True)
                     perturbation = self.step_size * grad.sign()
+                    # 获取加权扰动
+                    perturbation = get_weighted_perturbation(
+                        delta = perturbation,
+                        attention_matrix = attn_matrices,
+                        gamma = 2.5,
+                        mode = 'exponential',
+                        epsilon_constraint = 0.1
+                    )
 
                     adv_imgs = clone_adv_imgs.detach() + perturbation
                     adv_imgs = torch.min(torch.max(adv_imgs, imgs - self.eps), imgs + self.eps)
@@ -305,7 +363,13 @@ class ImageAttacker():
                 grad = adv_imgs.grad
                 grad = grad / torch.mean(torch.abs(grad), dim=(1, 2, 3), keepdim=True)
                 perturbation = self.step_size * grad.sign()
-
+                perturbation = get_weighted_perturbation(
+                        delta = perturbation,
+                        attention_matrix = attn_matrices,
+                        gamma = 2.5,
+                        mode = 'exponential',
+                        epsilon_constraint = 0.1
+                    )
                 adv_imgs = clone_adv_imgs.detach() + perturbation
                 adv_imgs = torch.min(torch.max(adv_imgs, imgs - self.eps), imgs + self.eps)
                 adv_imgs = torch.clamp(adv_imgs, 0.0, 1.0)
@@ -331,6 +395,13 @@ class ImageAttacker():
                 grad = adv_imgs.grad
                 grad = grad / torch.mean(torch.abs(grad), dim=(1, 2, 3), keepdim=True)
                 perturbation = self.step_size * grad.sign()
+                perturbation = get_weighted_perturbation(
+                        delta = perturbation,
+                        attention_matrix = attn_matrices,
+                        gamma = 2.5,
+                        mode = 'exponential',
+                        epsilon_constraint = 0.1
+                    )
                 adv_imgs = adv_imgs.detach() + perturbation
                 adv_imgs = torch.min(torch.max(adv_imgs, imgs - self.eps), imgs + self.eps)
                 adv_imgs = torch.clamp(adv_imgs, 0.0, 1.0)

@@ -5,3 +5,7 @@ AdvCLIP/data/*
 *.jpg
 *.png
 *.pkl
+*.pth
+*.pt
+*.log
+*.npy

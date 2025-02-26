@@ -245,7 +245,7 @@ def multi_head_attention_forward(query: Tensor,
     attn_output_weights = F.dropout(attn_output_weights, p=dropout_p, training=training)
 
     # use hooks for the attention weights if necessary
-    if attention_probs_forward_hook is not None and attention_probs_backwards_hook is not None:
+    if attention_probs_forward_hook is not None and attention_probs_backwards_hook is not None and attn_output_weights.requires_grad:
         attention_probs_forward_hook(attn_output_weights)
         attn_output_weights.register_hook(attention_probs_backwards_hook)
 

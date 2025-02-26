@@ -85,10 +85,13 @@ import numpy as np
 from PIL import Image
 from torchvision import transforms
 from torch.utils.data import Dataset
+from tqdm import tqdm  # 导入tqdm
+
 
 
 def interpret(image, text, model, device, start_layer=-1):
     batch_size = text.shape[0]
+
     images = image.repeat(batch_size, 1, 1, 1)
     logits_per_image, logits_per_text = model(images, text)
     probs = logits_per_image.softmax(dim=-1).detach().cpu().numpy()
@@ -123,21 +126,20 @@ def interpret(image, text, model, device, start_layer=-1):
 
     return image_relevance
 
-class PairedDataset(Dataset):
-    def __init__(self, ann_file, transform, image_root, processed_image_root, processed_attn_root, model, device, max_words=30, start_layer=-1, start_layer_text=-1):
+class paired_dataset(Dataset):
+    def __init__(self, ann_file, transform, image_root, processed_image_root, processed_attn_root, device, max_words=30, model_name=None):
         self.ann = json.load(open(ann_file, 'r'))
         self.transform = transform
         self.image_root = image_root
         self.processed_image_root = processed_image_root
         self.processed_attn_root = processed_attn_root
-        self.model = model
+        self.model, _ = clip.load("ViT-B/32", device=device, jit=False)
+        # self.model=model
         self.device = device
-        self.max_words = max_words
-        self.start_layer = start_layer
-        self.start_layer_text = start_layer_text
-
         self.text = []
         self.image = []
+        self.max_words=max_words
+        self.model_name=model_name
 
         self.txt2img = {}
         self.img2txt = {}
@@ -146,7 +148,8 @@ class PairedDataset(Dataset):
         os.makedirs(self.processed_image_root, exist_ok=True)  # 保存处理过的图像的目录
         os.makedirs(self.processed_attn_root, exist_ok=True)  # 保存相关性矩阵的目录
 
-        for i, ann in enumerate(self.ann):
+        # 假设 self.ann 是一个列表或可迭代对象，你可以用 tqdm 包装它
+        for i, ann in tqdm(enumerate(self.ann), total=len(self.ann), desc="Processing Images"):
             self.img2txt[i] = []
             self.image.append(ann['image'])
             image_path = os.path.join(self.image_root, ann['image'])
@@ -164,25 +167,44 @@ class PairedDataset(Dataset):
                 # 保存处理过的图像到新的文件夹
                 transformed_image = transforms.ToPILImage()(image_transformed)  # 将tensor转回PIL图像
                 transformed_image.save(transformed_image_path)
-
-            # 为每个图像和文本生成并保存相关性矩阵
-            texts = [pre_caption(caption, self.max_words) for caption in ann['caption']]
-            # texts_tensor = torch.tensor([text_to_tensor(text) for text in texts]).to(self.device)  # 假设有 `text_to_tensor` 函数将文本转换为张量
-            image_tensor = self.transform(image).unsqueeze(0).to(self.device)
                 
-
-            for j, caption in enumerate(ann['caption']):
-                processed_caption=pre_caption(caption, self.max_words)
-                self.text.append(processed_caption)
-                self.txt2img[txt_id] = i
-                self.img2txt[i].append(txt_id)
-                text = clip.tokenize([processed_caption]).to(device)
-                relevance_matrix = interpret(image_tensor, text, self.model, self.device)
-
-                # 保存每个文本的相关性矩阵到指定目录，命名为 'image_name_text_id.npy'
-                attn_matrix_path = os.path.join(self.processed_attn_root, f"{ann['image']}_text{txt_id}.npy")
-                np.save(attn_matrix_path, relevance_matrix.cpu().numpy())
-                txt_id += 1
+                if self.model_name in ['ALBEF', 'TCL']:
+                    n_px = self.model.visual.input_resolution
+                    clip_transform=transforms.Compose([
+                        transforms.Resize(n_px, interpolation=Image.BICUBIC),
+                        transforms.CenterCrop(n_px),
+                        transforms.ToTensor(),       
+                    ])
+                    image_transformed=clip_transform(image)
+                image_tensor = image_transformed.to(self.device)
+                for _, caption in enumerate(ann['caption']):
+                    processed_caption = pre_caption(caption, self.max_words)
+                    self.text.append(processed_caption)
+                    self.txt2img[txt_id] = i
+                    self.img2txt[i].append(txt_id)
+                    text = clip.tokenize([processed_caption]).to(device)
+                    relevance_matrix = interpret(image_tensor, text, self.model, self.device)
+                    if self.model_name in ['ALBEF', 'TCL']:
+                        dim = int(relevance_matrix.numel() ** 0.5)
+                        relevance_matrix = relevance_matrix.reshape(1, 1, dim, dim)
+                        relevance_matrix = torch.nn.functional.interpolate(relevance_matrix, size=384, mode='bilinear')
+                        relevance_matrix = relevance_matrix.reshape(384, 384).cuda().data
+                    else:
+                        dim = int(relevance_matrix.numel() ** 0.5)
+                        relevance_matrix = relevance_matrix.reshape(1, 1, dim, dim)
+                        relevance_matrix = torch.nn.functional.interpolate(relevance_matrix, size=224, mode='bilinear')
+                        relevance_matrix = relevance_matrix.reshape(224, 224).cuda().data
+                    # 保存每个文本的相关性矩阵到指定目录，命名为 'image_name_text_id.npy'
+                    attn_matrix_path = os.path.join(self.processed_attn_root, f"{ann['image']}_text{txt_id}.npy")
+                    np.save(attn_matrix_path, relevance_matrix.cpu().numpy())
+                    txt_id+=1
+            else:
+                for _, caption in enumerate(ann['caption']):
+                    processed_caption = pre_caption(caption, self.max_words)
+                    self.text.append(processed_caption)
+                    self.txt2img[txt_id] = i
+                    self.img2txt[i].append(txt_id)
+                    txt_id+=1
 
     def __len__(self):
         return len(self.image)
@@ -191,6 +213,8 @@ class PairedDataset(Dataset):
         # 直接从保存的图像文件夹加载处理后的图像
         image_path = os.path.join(self.processed_image_root, self.image[index])
         image = Image.open(image_path).convert('RGB')
+        to_tensor = transforms.ToTensor()
+        image = to_tensor(image)
         
         # 加载与图像对应的相关性矩阵
         text_ids = self.img2txt[index]
@@ -200,10 +224,13 @@ class PairedDataset(Dataset):
         for text_id in text_ids:
             # 加载与文本对应的相关性矩阵
             attn_matrix_path = os.path.join(self.processed_attn_root, f"{self.image[index]}_text{text_id}.npy")
-            attn_matrix = np.load(attn_matrix_path)
-            attn_matrices.append(attn_matrix)
-
-        return image, texts, index, text_ids, attn_matrices
+            image_relevance = np.load(attn_matrix_path)
+            image_relevance=torch.from_numpy(image_relevance).float()
+            image_relevance = (image_relevance - image_relevance.min()) / (image_relevance.max() - image_relevance.min())
+            attn_matrices.append(image_relevance)
+        attn_matrices = torch.stack(attn_matrices)
+        averaged_attn_matrices = attn_matrices.mean(dim=0)
+        return image, texts, index, text_ids, averaged_attn_matrices
 
     def collate_fn(self, batch):
         imgs, txt_groups, img_ids, text_ids_groups, attn_matrices_groups = list(zip(*batch))        

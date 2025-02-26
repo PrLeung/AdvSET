@@ -143,7 +143,7 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
 
     all_texts_all=[]
 
-    for batch_idx, (images, texts_group, images_ids, text_ids_groups) in enumerate(data_loader):
+    for batch_idx, (images, texts_group, images_ids, text_ids_groups, attn_matrices) in enumerate(data_loader):
         print(f'--------------------> batch:{batch_idx}/{len(data_loader)}')
         for index_text in range(len(texts_group)):
             all_texts_all+=texts_group[index_text]
@@ -181,7 +181,7 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
         assert all_txt_supervisions.shape[0] == len(all_texts)
 
     projection_matrix=get_projection_matrix(all_txt_supervisions)
-    for batch_idx, (images, texts_group, images_ids, text_ids_groups) in enumerate(data_loader):
+    for batch_idx, (images, texts_group, images_ids, text_ids_groups, attn_matrices) in enumerate(data_loader):
         print(f'--------------------> batch:{batch_idx}/{len(data_loader)}')
         texts_ids = []
         txt2img = []
@@ -193,7 +193,7 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
         images = images.to(device)
 
         adv_images, adv_texts,execuate_time = attacker.attack(images, texts, txt2img,projection_matrix, device=device,
-                                                max_length=max_length, scales=scales)
+                                                max_length=max_length, scales=scales, attn_matrices=attn_matrices)
 
         with torch.no_grad():
             s_adv_images_norm = images_normalize(adv_images)
@@ -389,7 +389,7 @@ def load_model(args,model_name,text_encoder, device):
     ### load checkpoint
     else:
         model_name = 'ViT-B/16' if model_name == 'CLIP_ViT' else 'RN101'
-        model, preprocess = clip.load(model_name, device=device)
+        model, preprocess = clip.load(model_name, device=device, jit=False)
         model.set_tokenizer(tokenizer)
         return model, ref_model, tokenizer
     
@@ -421,7 +421,7 @@ def eval_asr(model, ref_model, tokenizer, t_models, t_ref_models, t_tokenizers, 
                                                                    data_loader, tokenizer, t_tokenizers, device, args,config)
 
 
-    result_file_path = "./result_kmeans.txt"
+    result_file_path = "./result_attn.txt"
 
     with open(result_file_path, "a") as file:
         file.write("\n") 
@@ -497,18 +497,21 @@ def main(args, config):
             t_model = t_models[index]
             t_n_px = t_model.visual.input_resolution
             t_test_transform = transforms.Compose([
+                transforms.ToPILImage(),
                 # transforms.Resize(n_px, interpolation=transforms.InterpolationMode.BICUBIC),
                 transforms.Resize(t_n_px, interpolation=Image.BICUBIC),
                 transforms.CenterCrop(t_n_px),
-                # transforms.ToTensor(),
+                transforms.ToTensor(),
             ])
             t_test_transforms.append(t_test_transform)
     
+    
+
     if args.source_model in ['ALBEF', 'TCL']:
-        test_dataset = paired_dataset(config['test_file'], s_test_transform, config['image_root'], config['fused_image_root'], config['fused_attn_root'])
+        test_dataset = paired_dataset(config['test_file'], s_test_transform, config['image_root'], config['fused_image_root'], config['fused_attn_root'], device="cuda:2", model_name=args.source_model)
     else:
-        test_dataset = paired_dataset(config['test_file'], s_test_transform, config['image_root'], config['aligned_image_root'], config['aligned_attn_root'])
-    return
+        test_dataset = paired_dataset(config['test_file'], s_test_transform, config['image_root'], config['aligned_image_root'], config['aligned_attn_root'],device="cuda:1", model_name=args.source_model)
+    # return
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size,
                              num_workers=4, collate_fn=test_dataset.collate_fn)
 
