@@ -19,30 +19,25 @@ import torch
 
 import torch
 
-def dynamic_scaling(A, gamma=2.0, mode='linear'):
+def dynamic_scaling(A, gamma=2.0):
     """注意力矩阵动态范围调整"""
-    if mode == 'linear':
-        return (A - 0.5) * 2 * gamma + 1  # 线性扩展
-    elif mode == 'exponential':
-        return torch.exp(gamma * (A - 0.5))  # 指数增强
-    else:
-        raise ValueError("Unsupported scaling mode")
+    return torch.exp(gamma * (A - 0.5))  # 指数增强
 
-def get_weighted_perturbation(delta, attention_matrix, 
+def get_weighted_perturbation(delta, R, 
                             gamma=1.0, mode='linear',
                             epsilon_constraint=None):
     """生成加权扰动"""
-    # 将 attention_matrix 从 tuple 转换为 [batch, h, w] 张量
-    attention_matrix = torch.stack(attention_matrix, dim=0)
+    # 将 R 从 tuple 转换为 [batch, h, w] 张量
+    R = torch.stack(R, dim=0)
     
     # 维度验证
-    assert attention_matrix.shape[0] == delta.shape[0], \
-        f"注意力矩阵的批次维度 {attention_matrix.shape[0]} 应与扰动的批次维度 {delta.shape[0]} 匹配"
-    assert attention_matrix.shape[1:] == delta.shape[2:], \
-        f"注意力矩阵的空间维度 {attention_matrix.shape[1:]} 应与扰动的空间维度 {delta.shape[2:]} 匹配"
+    assert R.shape[0] == delta.shape[0], \
+        f"注意力矩阵的批次维度 {R.shape[0]} 应与扰动的批次维度 {delta.shape[0]} 匹配"
+    assert R.shape[1:] == delta.shape[2:], \
+        f"注意力矩阵的空间维度 {R.shape[1:]} 应与扰动的空间维度 {delta.shape[2:]} 匹配"
     
     # 动态范围调整
-    scaled_A = dynamic_scaling(attention_matrix, gamma, mode)
+    scaled_A = dynamic_scaling(R, gamma, mode)
     
     # 扩展并广播注意力矩阵以匹配 delta 的维度
     A = scaled_A.unsqueeze(1).to(delta.device)  # 变为 [batch, 1, h, w]
@@ -310,7 +305,7 @@ class ImageAttacker():
                     # 获取加权扰动
                     perturbation = get_weighted_perturbation(
                         delta = perturbation,
-                        attention_matrix = attn_matrices,
+                        R = attn_matrices,
                         gamma = 2.5,
                         mode = 'exponential',
                         epsilon_constraint = 0.1
@@ -365,7 +360,7 @@ class ImageAttacker():
                 perturbation = self.step_size * grad.sign()
                 perturbation = get_weighted_perturbation(
                         delta = perturbation,
-                        attention_matrix = attn_matrices,
+                        R = attn_matrices,
                         gamma = 2.5,
                         mode = 'exponential',
                         epsilon_constraint = 0.1
@@ -397,7 +392,7 @@ class ImageAttacker():
                 perturbation = self.step_size * grad.sign()
                 perturbation = get_weighted_perturbation(
                         delta = perturbation,
-                        attention_matrix = attn_matrices,
+                        R = attn_matrices,
                         gamma = 2.5,
                         mode = 'exponential',
                         epsilon_constraint = 0.1
@@ -405,12 +400,6 @@ class ImageAttacker():
                 adv_imgs = adv_imgs.detach() + perturbation
                 adv_imgs = torch.min(torch.max(adv_imgs, imgs - self.eps), imgs + self.eps)
                 adv_imgs = torch.clamp(adv_imgs, 0.0, 1.0)
-            # x_transformed_adv = transformation_net(x_adv)
-            # x_transformed_clean = transformation_net(x_clean)
-            # loss_T = self.loss_func(adv_imgs_embeds, imgs_embeds, txt_embeds, txt2img,all_txt_supervisions)
-            # optimizer_T.zero_grad()
-            # loss_T.backward()
-            # optimizer_T.step()
         end_time = time.time()
 
         elapsed_time = end_time - start_time

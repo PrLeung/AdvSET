@@ -34,44 +34,58 @@ from dataset import paired_dataset
 from sklearn.cluster import KMeans
 
 
-def get_projection_matrix(all_txt_supervisions): 
-    """
-    计算基于文本特征的投影矩阵
-    :param all_txt_supervisions: n * d 的矩阵，表示所有文本的特征
-    :return: 返回最终的投影矩阵
-    """
-    
-    # Step 1: 聚类文本特征
-    num_clusters = 10  # 设置簇的数量，根据需求调整
+def get_projection_matrix(all_txt_supervisions):
+    num_clusters = 10
     kmeans = KMeans(n_clusters=num_clusters)
-    kmeans.fit(all_txt_supervisions.cpu().numpy())  # 使用 KMeans 聚类
-    cluster_labels = kmeans.labels_  # 得到每个文本的簇标签
+    cluster_labels = kmeans.fit_predict(all_txt_supervisions.cpu().numpy())
+    total_samples = len(cluster_labels)
+    target_sample_count = int(total_samples * 0.4)
     
-    # Step 2: 为每个簇计算投影矩阵（使用SVD）
-    cluster_projection_matrices = []
-    for cluster_id in range(num_clusters):
-        # 获取当前簇的所有文本索引
-        cluster_indices = np.where(cluster_labels == cluster_id)[0]
-        cluster_embeddings = all_txt_supervisions[cluster_indices]  # 当前簇的所有文本特征
-        
-        # 进行SVD分解
-        U, S, V = torch.svd(all_txt_supervisions.T.to(torch.float32))
-        U,S,V=U.half(),S.half(),V.half()
-        projection_matrix = U[:, 1:len(U)] @ U[:, 1:len(U)].t() # 投影到语义空间
-        cluster_projection_matrices.append(projection_matrix)
-
-    # Step 3: 加权组合投影矩阵
-    total_samples = len(all_txt_supervisions)
-    weights = [len(np.where(cluster_labels == cluster_id)[0]) / total_samples for cluster_id in range(num_clusters)]
+    # 统计每个簇的样本数量
+    unique, counts = np.unique(cluster_labels, return_counts=True)
+    cluster_sizes = dict(zip(unique, counts))
     
-    # 加权组合所有簇的投影矩阵
-    final_projection_matrix = np.zeros_like(cluster_projection_matrices[0].cpu())
-    for i, projection_matrix in enumerate(cluster_projection_matrices):
-        projection_matrix = projection_matrix.cpu().numpy()  # 将PyTorch张量转换为NumPy数组
-        final_projection_matrix += weights[i] * projection_matrix
+    # 计算每个簇应抽取的样本数量
+    cluster_sample_counts = {}
+    for cluster, size in cluster_sizes.items():
+        proportion = size / total_samples
+        cluster_sample_counts[cluster] = int(proportion * target_sample_count)
+    
+    # 从每个簇中抽取样本
+    selected_indices = []
+    for cluster in range(num_clusters):
+        cluster_indices = np.where(cluster_labels == cluster)[0]
+        np.random.shuffle(cluster_indices)
+        num_to_select = cluster_sample_counts.get(cluster, 0)
+        selected_indices.extend(cluster_indices[:num_to_select])
+    
+    # 获取抽取的样本
+    selected_samples = all_txt_supervisions[selected_indices]
+    U, S, V = torch.svd(selected_samples.T.to(torch.float32))
+    U,S,V=U.half(),S.half(),V.half()
+    projection_matrix = U[:, 1:len(U)] @ U[:, 1:len(U)].t() # 投影到语义空间
+    return projection_matrix.half()
 
-    # 返回计算得到的投影矩阵
-    return torch.tensor(final_projection_matrix).to(all_txt_supervisions.device)
+def get_projection_matrix_2(all_txt_supervisions):
+    U, S, V = torch.svd(all_txt_supervisions.T.to(torch.float32))
+    U,S,V=U.half(),S.half(),V.half()
+    projection_matrix = U[:, 1:len(U)] @ U[:, 1:len(U)].t() # 投影到语义空间
+    return projection_matrix.half()
+
+def save_adversarial_images(adv_images, image_ids, save_dir="adv_images"):
+    """
+    保存对抗性图像到指定目录，最多保存 max_images 张
+    """
+    os.makedirs(save_dir, exist_ok=True)  # 确保目录存在
+
+    num_saved = len(os.listdir(save_dir))  # 获取已有图片数量，避免覆盖
+    for i, img in enumerate(adv_images):        
+        img_pil = toImage(img)  # 转换为 PIL.Image
+        save_path = os.path.join(save_dir, image_ids[i])  # 格式化命名
+        img_pil.save(save_path)  # 保存图像
+        num_saved += 1
+
+    print(f"Saved {num_saved} adversarial images to {save_dir}")
 
 def toImage(norm_img):
     pil_array = (norm_img * 255).to(torch.uint8).cpu().numpy()
@@ -143,15 +157,16 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
 
     all_texts_all=[]
 
-    for batch_idx, (images, texts_group, images_ids, text_ids_groups, attn_matrices) in enumerate(data_loader):
+    for batch_idx, (images, texts_group, images_name, images_ids, text_ids_groups, attn_matrices) in enumerate(data_loader):
         print(f'--------------------> batch:{batch_idx}/{len(data_loader)}')
         for index_text in range(len(texts_group)):
             all_texts_all+=texts_group[index_text]
 
-    num_samples = int(0.4 * len(all_texts_all))
+    # num_samples = int(0.4 * len(all_texts_all))
 
        #使用这些索引来选取张量中的数据
-    all_texts = random.sample(all_texts_all, num_samples)
+    # all_texts = random.sample(all_texts_all, num_samples)
+    all_texts=all_texts_all
 
     batch_size = 3000  # 每个批次的大小
     n = len(all_texts)  # 总文本数量
@@ -181,7 +196,8 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
         assert all_txt_supervisions.shape[0] == len(all_texts)
 
     projection_matrix=get_projection_matrix(all_txt_supervisions)
-    for batch_idx, (images, texts_group, images_ids, text_ids_groups, attn_matrices) in enumerate(data_loader):
+    # projection_matrix=get_projection_matrix_2(all_txt_supervisions)
+    for batch_idx, (images, texts_group, images_name, images_ids, text_ids_groups, attn_matrices) in enumerate(data_loader):
         print(f'--------------------> batch:{batch_idx}/{len(data_loader)}')
         texts_ids = []
         txt2img = []
@@ -192,9 +208,17 @@ def retrieval_eval(model, ref_model, t_models, t_ref_models, t_test_transforms, 
             txt2img += [i]*len(text_ids_groups[i])
         images = images.to(device)
 
-        adv_images, adv_texts,execuate_time = attacker.attack(images, texts, txt2img,projection_matrix, device=device,
+        adv_images, adv_texts, execuate_time = attacker.attack(images, texts, txt2img,projection_matrix, device=device,
                                                 max_length=max_length, scales=scales, attn_matrices=attn_matrices)
-
+        
+        if batch_idx < 2:
+            # 将生成的对抗性文本保存到 txt 文件中
+            perturbations=[adv_images[i]-images[i] for i,_ in enumerate(adv_images)]
+            save_adversarial_images(perturbations, images_name, save_dir="perturbations/")
+            with open("adv_texts.txt", "a", encoding="utf-8") as f:
+                for i, text in enumerate(adv_texts):
+                    f.write(images_name[int(i/5)]+": "+text + "\n")
+        # save_adversarial_images(adv_images, images_name, save_dir="adv_images/")
         with torch.no_grad():
             s_adv_images_norm = images_normalize(adv_images)
             if args.source_model in ['ALBEF', 'TCL']:
@@ -379,8 +403,7 @@ def itm_eval(scores_i2t, scores_t2i, img2txt, txt2img, model_name):
     return eval_result
 
 def load_model(args,model_name,text_encoder, device):
-    # tokenizer = BertTokenizer.from_pretrained(text_encoder)
-    tokenizer = BertTokenizer.from_pretrained(text_encoder)
+    tokenizer = BertTokenizer.from_pretrained("/home/myang/SA-AET/BLIP/bert")
     ref_model = BertForMaskedLM.from_pretrained(text_encoder)    
     if model_name in ['ALBEF', 'TCL']:
         model = ALBEF(config=config, text_encoder=text_encoder, tokenizer=tokenizer)
@@ -421,7 +444,7 @@ def eval_asr(model, ref_model, tokenizer, t_models, t_ref_models, t_tokenizers, 
                                                                    data_loader, tokenizer, t_tokenizers, device, args,config)
 
 
-    result_file_path = "./result_attn.txt"
+    result_file_path = "./result.txt"
 
     with open(result_file_path, "a") as file:
         file.write("\n") 

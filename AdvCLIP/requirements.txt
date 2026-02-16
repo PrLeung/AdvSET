@@ -1,4 +1,0 @@
-numpy==1.23.3
-pandas==0.25.2
-tqdm==4.64.1
-scipy

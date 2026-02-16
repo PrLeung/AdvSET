@@ -1,0 +1,40 @@
+val2014/COCO_val2014_000000184613.jpg: a child holding a flowered umbrella and petting a one small
+val2014/COCO_val2014_000000184613.jpg: a young small holding an umbrella next to a herd of cattle
+val2014/COCO_val2014_000000184613.jpg: a young junior barefoot holding an umbrella touching the horn of a cow
+val2014/COCO_val2014_000000184613.jpg: a young senior with an umbrella who is touching the horn of a cow
+val2014/COCO_val2014_000000184613.jpg: a boy girl an umbrella while standing next to livestock
+val2014/COCO_val2014_000000403013.jpg: a each kitchen filled with appliances and cooking utensils
+val2014/COCO_val2014_000000403013.jpg: a galley side with cabinets and appliances on both sides
+val2014/COCO_val2014_000000403013.jpg: a hallway leading into a white kitchen with full
+val2014/COCO_val2014_000000403013.jpg: side view of a kitchen with a sink stove refrigerator and pantry
+val2014/COCO_val2014_000000403013.jpg: the summer door of the small kitchen is closed
+val2014/COCO_val2014_000000562150.jpg: a little girl holding a kitten next to a blue school
+val2014/COCO_val2014_000000562150.jpg: girl in a tank top holding a kitten in her back mother
+val2014/COCO_val2014_000000562150.jpg: a young girl is holding a small tiny
+val2014/COCO_val2014_000000562150.jpg: girl with a yellow shirt holding a small bat
+val2014/COCO_val2014_000000562150.jpg: a girl school as she holds a kitty cat
+val2014/COCO_val2014_000000360772.jpg: a love sitting in a bathroom next to a sink
+val2014/COCO_val2014_000000360772.jpg: a toilet in a bathroom with always faded paint
+val2014/COCO_val2014_000000360772.jpg: a bathroom with a a be straight wall and wall socket with no panel
+val2014/COCO_val2014_000000360772.jpg: the toilet is has the door in the bathroom
+val2014/COCO_val2014_000000360772.jpg: the every wall needs to be resurfaced and painted
+val2014/COCO_val2014_000000340559.jpg: there are two couple next to two mirrors
+val2014/COCO_val2014_000000340559.jpg: two very metallic earth are shown as well as the mirrors above them
+val2014/COCO_val2014_000000340559.jpg: a room with stainless steel equipment including including and mirrors
+val2014/COCO_val2014_000000340559.jpg: two stainless steel hardy with mirrors and a fire extinguisher
+val2014/COCO_val2014_000000340559.jpg: a photo of a each made of steel
+val2014/COCO_val2014_000000321107.jpg: a woman young a bicycle on a road next to the median
+val2014/COCO_val2014_000000321107.jpg: a girl is riding her bike down the street
+val2014/COCO_val2014_000000321107.jpg: a women riding her bicycle on the side of a street
+val2014/COCO_val2014_000000321107.jpg: a person on a each riding on a street
+val2014/COCO_val2014_000000321107.jpg: a woman riding a bike down a street next to a their feed
+val2014/COCO_val2014_000000129001.jpg: a bath baby sitting next to a sink in a bathroom
+val2014/COCO_val2014_000000129001.jpg: the bathroom is clean and ready for so to use
+val2014/COCO_val2014_000000129001.jpg: a bath teen sitting next to a sink
+val2014/COCO_val2014_000000129001.jpg: a bathroom that has a shower water over a bathtub
+val2014/COCO_val2014_000000129001.jpg: a bathroom with with non colored tile bathtub and pedestal sink
+val2014/COCO_val2014_000000556616.jpg: a row of parked cars sitting next to parking commercial
+val2014/COCO_val2014_000000556616.jpg: a row of cars parked on a street with parking parking
+val2014/COCO_val2014_000000556616.jpg: a series of parking space and cars are located next to each other
+val2014/COCO_val2014_000000556616.jpg: a parking parking on a street by a car with traffic
+val2014/COCO_val2014_000000556616.jpg: a parking parking on a street with cars
