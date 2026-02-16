@@ -16,22 +16,22 @@
       "program": "eval_AET.py",
       "args": [
         "--config",
-        "./configs/Retrieval_flickr.yaml",
+        "./configs/Retrieval_coco.yaml",
         "--cuda_id",
-        "2",
+        "0",
         "--model_list",
         "ALBEF",
         "TCL",
         "CLIP_ViT",
         "CLIP_CNN",
         "--source_model",
-        "CLIP_CNN",
+        "ALBEF",
         "--albef_ckpt",
-        "./checkpoints/albef_flickr.pth",
+        "./checkpoints/albef_coco.pth",
         "--tcl_ckpt",
-        "./checkpoints/tcl_flickr.pth",
+        "./checkpoints/tcl_coco.pth",
         "--original_rank_index_path",
-        "./std_eval_idx/flickr30k/"
+        "./std_eval_idx/coco/"
       ],
       "console": "integratedTerminal",
       "justMyCode": false
