@@ -19,9 +19,14 @@ import torch
 
 import torch
 
-def dynamic_scaling(A, gamma=2.0):
+def dynamic_scaling(A, gamma=2.0, mode='exponential'):
     """注意力矩阵动态范围调整"""
-    return torch.exp(gamma * (A - 0.5))  # 指数增强
+    if mode == 'exponential':
+        return torch.exp(gamma * (A - 0.5))  # 指数增强
+    elif mode == 'linear':
+        return gamma * A  # 线性增强
+    else:
+        return torch.exp(gamma * (A - 0.5))  # 默认指数增强
 
 def get_weighted_perturbation(delta, R, 
                             gamma=1.0, mode='linear',
@@ -102,6 +107,105 @@ def umap(output_net, target_net, eps=0.0000001):
     loss = CE(target_similarity,model_similarity)
     return loss
 
+def umap_with_clusters(output_net, target_net, cluster_centers, top_k=4, eps=0.0000001, return_cluster_info=False):
+    """
+    使用聚类中心计算邻接概率矩阵，计算逻辑与原始 umap 函数一致
+    
+    Args:
+        output_net: 当前 batch 的嵌入 [batch_size, embed_dim]
+        target_net: 目标嵌入 [batch_size, embed_dim]
+        cluster_centers: 聚类中心 [num_clusters, embed_dim]
+        top_k: 选择最近的 k 个聚类中心
+        eps: 数值稳定性参数
+        return_cluster_info: 是否返回聚类信息（类别和最近的k个类别索引）
+    
+    Returns:
+        loss: 拓扑损失
+        cluster_info: (可选) 包含类别和最近k个类别索引的字典
+    """
+    device = output_net.device
+    cluster_centers = cluster_centers.to(device).to(output_net.dtype)
+    target_net = target_net.to(output_net.dtype)
+
+    # 归一化，确保余弦相似度稳定
+    output_net = F.normalize(output_net, p=2, dim=1, eps=eps)
+    target_net = F.normalize(target_net, p=2, dim=1, eps=eps)
+    cluster_centers = F.normalize(cluster_centers, p=2, dim=1, eps=eps)
+
+    # 样本-聚类中心相似度矩阵（列即聚类中心）
+    sample_cluster_sim = torch.mm(output_net, cluster_centers.t())  # [batch_size, num_clusters]
+    top_k = min(top_k, sample_cluster_sim.shape[1])
+    top_k_values, top_k_indices = torch.topk(sample_cluster_sim, top_k, dim=1)  # [batch_size, top_k]
+
+    # model_similarity: adv 到 top-k 聚类中心的相似度
+    model_similarity = top_k_values
+
+    # target_similarity: clean 到同一组 top-k 聚类中心的相似度
+    selected_centers = cluster_centers[top_k_indices.reshape(-1)].view(output_net.shape[0], top_k, -1)
+    target_similarity = torch.bmm(
+        target_net.unsqueeze(1),
+        selected_centers.transpose(1, 2)
+    ).squeeze(1)  # [batch_size, top_k]
+
+    # 由相似度构造行概率分布，再计算分布差异
+    model_similarity = (model_similarity + 1.0) / 2.0
+    target_similarity = (target_similarity + 1.0) / 2.0
+    model_similarity = model_similarity / (torch.sum(model_similarity, dim=1, keepdim=True) + eps)
+    target_similarity = target_similarity / (torch.sum(target_similarity, dim=1, keepdim=True) + eps)
+    
+    # Calculate the KL-divergence
+    loss = CE(target_similarity, model_similarity)
+    
+    if return_cluster_info:
+        cluster_info = {
+            'cluster_id': top_k_indices[:, 0].cpu().tolist(),  # 最近的聚类中心索引（类别）
+            'top_k_indices': top_k_indices.cpu().tolist(),  # 最近的k个聚类中心索引
+            'top_k_similarities': top_k_values.cpu().tolist()  # 最近的k个聚类中心的相似度
+        }
+        return loss, cluster_info
+    
+    return loss
+
+def precompute_cluster_centers(all_image_embeds, num_clusters=40, device='cpu'):
+    """
+    对整个数据集的图像嵌入进行 KMeans 聚类
+    
+    Args:
+        all_image_embeds: 整个数据集的图像嵌入 [num_samples, embed_dim]
+        num_clusters: 聚类数量，默认为 40
+        device: 设备
+    
+    Returns:
+        cluster_centers: 聚类中心 [num_clusters, embed_dim]
+        cluster_labels: 每个样本的类别标签 [num_samples]
+    """
+    from sklearn.cluster import KMeans
+    
+    # 转换为 numpy 数组
+    if isinstance(all_image_embeds, torch.Tensor):
+        embeds_np = all_image_embeds.detach().cpu().numpy()
+    else:
+        embeds_np = all_image_embeds
+    
+    # 执行 KMeans 聚类
+    kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
+    cluster_labels = kmeans.fit_predict(embeds_np)
+    cluster_centers = kmeans.cluster_centers_
+    
+    # 转换为 torch tensor
+    cluster_centers = torch.from_numpy(cluster_centers).float().to(device)
+    
+    print(f"聚类完成: {num_clusters} 个聚类中心")
+    print(f"总样本数: {len(embeds_np)}")
+    
+    # 统计每个聚类的样本数量
+    unique, counts = np.unique(cluster_labels, return_counts=True)
+    print("每个聚类的样本数量:")
+    for cluster_id, count in zip(unique, counts):
+        print(f"  聚类 {cluster_id}: {count} 个样本")
+    
+    return cluster_centers, cluster_labels
+
 
 
 class Attacker():
@@ -110,7 +214,7 @@ class Attacker():
         self.img_attacker = img_attacker
         self.txt_attacker = txt_attacker
 
-    def attack(self, imgs, txts, txt2img, all_txt_supervisions,device='cpu', max_length=30, scales=None, attn_matrices=None, masks=None, **kwargs):
+    def attack(self, imgs, txts, txt2img, all_txt_supervisions,device='cpu', max_length=30, scales=None, attn_matrices=None, masks=None, return_cluster_info=False, **kwargs):
         with torch.no_grad():
             origin_img_output = self.model.inference_image(self.img_attacker.normalization(imgs))
             img_supervisions = origin_img_output['image_feat'][txt2img]
@@ -126,8 +230,13 @@ class Attacker():
             # all_texts_output = self.model.inference_text(all_texts_input)
             
         start_time = time.time()
-        adv_imgs, last_adv_imgs = self.img_attacker.txt_guided_attack(self.model, imgs, txt2img,all_txt_supervisions, device,
-                                                                      scales=scales, txt_embeds=txt_supervisions, attn_matrices=attn_matrices)
+        attack_result = self.img_attacker.txt_guided_attack(self.model, imgs, txt2img,all_txt_supervisions, device,
+                                                                      scales=scales, txt_embeds=txt_supervisions, attn_matrices=attn_matrices,
+                                                                      return_cluster_info=return_cluster_info)
+        if return_cluster_info:
+            adv_imgs, last_adv_imgs, cluster_info = attack_result
+        else:
+            adv_imgs, last_adv_imgs = attack_result
         end_time = time.time()
         execuate_time = end_time - start_time
 
@@ -139,6 +248,10 @@ class Attacker():
         adv_txts = self.txt_attacker.img_guided_attack(self.model, txts, img_embeds=img_supervisions,
                                                        adv_img_embeds=adv_img_supervisions,
                                                        last_adv_img_embeds=last_adv_img_supervisions)
+        
+        if return_cluster_info:
+            return adv_imgs, adv_txts, execuate_time, cluster_info
+        
         return adv_imgs, adv_txts, execuate_time
 
 def replicate_and_concatenate(adv_imgs_embeds, txts_embeds, txt2img):
@@ -188,38 +301,67 @@ def average_and_concat(txts_embeds, txt2img):
 
 
 class ImageAttacker():
-    def __init__(self, normalization, eps=2 / 255, steps=10, step_size=0.5 / 255, sample_numbers=5):
+    def __init__(self, normalization, eps=2 / 255, steps=10, step_size=0.5 / 255, sample_numbers=5, cluster_centers=None, use_attention_weighted=True, use_topological_loss=True):
         self.normalization = normalization
         self.eps = eps
         self.steps = steps
         self.step_size = step_size
         self.sample_numbers = sample_numbers
+        self.cluster_centers = cluster_centers
+        self.use_attention_weighted = use_attention_weighted
+        self.use_topological_loss = use_topological_loss
+        self._it_labels_cache = {}
 
-    def loss_func(self, adv_imgs_embeds, imgs_embs, txts_embeds, txt2img,projection_matrix):
+    def _get_it_labels(self, sim_shape, txt2img, device, dtype):
+        cache_key = (sim_shape[0], sim_shape[1], tuple(txt2img), str(device), str(dtype))
+        if cache_key in self._it_labels_cache:
+            return self._it_labels_cache[cache_key]
+
+        it_labels = torch.zeros(sim_shape, device=device, dtype=dtype)
+        for i in range(len(txt2img)):
+            it_labels[txt2img[i], i] = 1
+
+        # 控制缓存规模，避免长时间评估时占用过多显存
+        if len(self._it_labels_cache) > 16:
+            self._it_labels_cache.clear()
+        self._it_labels_cache[cache_key] = it_labels
+        return it_labels
+
+    def loss_func(self, adv_imgs_embeds, imgs_embs, txts_embeds, txt2img,projection_matrix, return_cluster_info=False):
         device = adv_imgs_embeds.device
-
-        # U, S, V = torch.svd(all_txt_supervisions.T.to(torch.float32))
-        # U,S,V=U.half(),S.half(),V.half()
-        # projection_matrix = U[:, 1:len(U)] @ U[:, 1:len(U)].t() # 投影到语义空间
+        
         adv_imgs_embeds=adv_imgs_embeds.half()
+        imgs_embs=imgs_embs.half()
         txts_embeds=txts_embeds.half()
         adv_imgs_embeds = adv_imgs_embeds @ projection_matrix
+        imgs_embs = imgs_embs @ projection_matrix
         txts_embeds = txts_embeds @ projection_matrix
 
         it_sim_matrix = adv_imgs_embeds @ txts_embeds.T
-        it_labels = torch.zeros(it_sim_matrix.shape).to(device)
-
-        for i in range(len(txt2img)):
-            it_labels[txt2img[i], i] = 1
+        it_labels = self._get_it_labels(it_sim_matrix.shape, txt2img, device, it_sim_matrix.dtype)
 
         loss_IaTcpos = -(it_sim_matrix * it_labels).sum(-1).mean()
 
         average_txt_embeds = average_and_concat(txts_embeds, txt2img)
-        umap_loss_pos1 = - umap(adv_imgs_embeds, imgs_embs)
-        umap_loss_pos2 = - umap(adv_imgs_embeds, average_txt_embeds)
-        umap_loss = umap_loss_pos1 + 5*umap_loss_pos2
-        loss = loss_IaTcpos+umap_loss
-        # loss=loss_IaTcpos
+        
+        cluster_info = None
+        if self.use_topological_loss:
+            if self.cluster_centers is not None:
+                if return_cluster_info:
+                    umap_loss_pos1, cluster_info = umap_with_clusters(adv_imgs_embeds, imgs_embs, self.cluster_centers, top_k=4, return_cluster_info=True)
+                else:
+                    umap_loss_pos1 = umap_with_clusters(adv_imgs_embeds, imgs_embs, self.cluster_centers, top_k=4)
+            else:
+                umap_loss_pos1 = umap(adv_imgs_embeds, imgs_embs)
+            
+            umap_loss=umap_loss_pos1
+            print("loss_IaTcpos",loss_IaTcpos,"umap_loss",umap_loss)
+            loss = loss_IaTcpos+5*umap_loss
+        else:
+            loss = loss_IaTcpos
+        
+        if return_cluster_info:
+            return loss, cluster_info
         return loss
     
     def loss_func_old(self, adv_imgs_embeds, txts_embeds, txt2img):  
@@ -237,6 +379,50 @@ class ImageAttacker():
         
         return loss
 
+    def get_cluster_info(self, imgs, image_embeds, eps=0.0000001):
+        """
+        获取图像的聚类信息（类别和最近的k个类别索引）
+        
+        Args:
+            imgs: 图像张量 [batch_size, c, h, w]
+            image_embeds: 图像嵌入 [batch_size, embed_dim]
+            eps: 数值稳定性参数
+        
+        Returns:
+            cluster_info: 包含类别和最近k个类别索引的字典
+        """
+        if self.cluster_centers is None:
+            return None
+        
+        device = image_embeds.device
+        cluster_centers = self.cluster_centers.to(device)
+        
+        # Ensure cluster_centers has the same dtype as image_embeds
+        cluster_centers = cluster_centers.to(image_embeds.dtype)
+        
+        # 归一化
+        image_embeds_norm = torch.sqrt(torch.sum(image_embeds ** 2, dim=1, keepdim=True))
+        image_embeds = image_embeds / (image_embeds_norm + eps)
+        image_embeds[image_embeds != image_embeds] = 0
+        
+        cluster_centers_norm = torch.sqrt(torch.sum(cluster_centers ** 2, dim=1, keepdim=True))
+        cluster_centers = cluster_centers / (cluster_centers_norm + eps)
+        
+        # 计算每个样本到所有聚类中心的余弦相似度
+        sample_cluster_sim = torch.mm(image_embeds, cluster_centers.t())  # [batch_size, num_clusters]
+        
+        # 选择最近的 top_k 个聚类中心
+        top_k = 4
+        top_k_values, top_k_indices = torch.topk(sample_cluster_sim, top_k, dim=1)  # [batch_size, top_k]
+        
+        cluster_info = {
+            'cluster_id': top_k_indices[:, 0].cpu().tolist(),  # 最近的聚类中心索引（类别）
+            'top_k_indices': top_k_indices.cpu().tolist(),  # 最近的k个聚类中心索引
+            'top_k_similarities': top_k_values.cpu().tolist()  # 最近的k个聚类中心的相似度
+        }
+        
+        return cluster_info
+
     def rand3Num(self): ### num1 -> adv num2-> clean num3->last
         while True:
             num1 = random.randint(1, 100)
@@ -252,7 +438,7 @@ class ImageAttacker():
 
         return (num1, num2, num3)
 
-    def txt_guided_attack(self, model, imgs, txt2img, projection_matrix,device, scales=None, txt_embeds=None, attn_matrices=None):
+    def txt_guided_attack(self, model, imgs, txt2img, projection_matrix,device, scales=None, txt_embeds=None, attn_matrices=None, return_cluster_info=False):
 
         model.eval()
 
@@ -272,6 +458,9 @@ class ImageAttacker():
 
         start_time = time.time()
         ratio_list = []
+        
+        # 用于存储聚类信息
+        cluster_info = None
 
         for step in range(self.steps):  # self.steps=10
             if last_adv_imgs != None:
@@ -302,14 +491,14 @@ class ImageAttacker():
                     grad = adv_imgs.grad
                     grad = grad / torch.mean(torch.abs(grad), dim=(1, 2, 3), keepdim=True)
                     perturbation = self.step_size * grad.sign()
-                    # 获取加权扰动
-                    perturbation = get_weighted_perturbation(
-                        delta = perturbation,
-                        R = attn_matrices,
-                        gamma = 2.5,
-                        mode = 'exponential',
-                        epsilon_constraint = 0.1
-                    )
+                    if self.use_attention_weighted and attn_matrices is not None:
+                        perturbation = get_weighted_perturbation(
+                            delta = perturbation,
+                            R = attn_matrices,
+                            gamma = 2.5,
+                            mode = 'exponential',
+                            epsilon_constraint = 0.1
+                        )
 
                     adv_imgs = clone_adv_imgs.detach() + perturbation
                     adv_imgs = torch.min(torch.max(adv_imgs, imgs - self.eps), imgs + self.eps)
@@ -358,7 +547,8 @@ class ImageAttacker():
                 grad = adv_imgs.grad
                 grad = grad / torch.mean(torch.abs(grad), dim=(1, 2, 3), keepdim=True)
                 perturbation = self.step_size * grad.sign()
-                perturbation = get_weighted_perturbation(
+                if self.use_attention_weighted and attn_matrices is not None:
+                    perturbation = get_weighted_perturbation(
                         delta = perturbation,
                         R = attn_matrices,
                         gamma = 2.5,
@@ -390,7 +580,8 @@ class ImageAttacker():
                 grad = adv_imgs.grad
                 grad = grad / torch.mean(torch.abs(grad), dim=(1, 2, 3), keepdim=True)
                 perturbation = self.step_size * grad.sign()
-                perturbation = get_weighted_perturbation(
+                if self.use_attention_weighted and attn_matrices is not None:
+                    perturbation = get_weighted_perturbation(
                         delta = perturbation,
                         R = attn_matrices,
                         gamma = 2.5,
@@ -405,6 +596,25 @@ class ImageAttacker():
         elapsed_time = end_time - start_time
         print(f"The function execution time: {elapsed_time} seconds")
 
+        # 如果需要返回聚类信息，在最后一步计算
+        cluster_info = None
+        if return_cluster_info and self.cluster_centers is not None:
+            with torch.no_grad():
+                # 计算干净图像的聚类信息
+                clean_cluster_info = self.get_cluster_info(imgs, imgs_embeds)
+                # 计算对抗图像的聚类信息
+                if self.normalization is not None:
+                    adv_imgs_output = model.inference_image(self.normalization(adv_imgs))
+                else:
+                    adv_imgs_output = model.inference_image(adv_imgs)
+                adv_cluster_info = self.get_cluster_info(adv_imgs, adv_imgs_output['image_feat'])
+                cluster_info = {
+                    'clean': clean_cluster_info,
+                    'adversarial': adv_cluster_info
+                }
+
+        if return_cluster_info:
+            return adv_imgs, last_adv_imgs, cluster_info
         return adv_imgs, last_adv_imgs
 
     def save_img(self, img_name, norm_img):
