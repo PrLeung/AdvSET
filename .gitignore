@@ -1,11 +1,54 @@
-**/__pycache__
-/checkpoints/*
-/datasets/*
-AdvCLIP/data/*
-*.jpg
-*.png
-*.pkl
+# Python artifacts
+**/__pycache__/
+*.py[cod]
+
+# Logs
+*.log
+
+# Model checkpoints / weights
+checkpoints/
 *.pth
 *.pt
-*.log
+*.ckpt
+*.bin
+*.safetensors
+
+# Datasets / images (large raw data)
+datasets/
+train2014/
+val2014/
+flickr30k-images/
+**/train2014/
+**/val2014/
+**/flickr30k-images/
+ALBEF/dataset_2014/
+BLIP/val2014/
+AdvCLIP/data/
+
+# Generated artifacts / caches
+cache/
+temp/
+processed_dataset/
+attention/
+*.pkl
 *.npy
+*.npz
+
+# Results: keep lightweight summaries, ignore heavy artifacts
+results/**/adv_images/
+results/**/cluster_info.csv
+results/**/attacked_captions.txt
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.7z
+*.rar
+
+# Environment files
+.env
+.venv/
+venv/
