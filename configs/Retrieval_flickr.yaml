@@ -2,6 +2,8 @@ test_file: './data_annotation/flickr30k_test.json'
 image_root: './datasets/'
 aligned_image_root: 'aligned_dataset/'
 aligned_attn_root: 'aligned_attention/'
+# unified attention storage root (model-specific subfolders will be created under this dir)
+attention_root: 'attention/'
 fused_image_root: 'fused_dataset/'
 fused_attn_root: 'fused_attention/'
 bert_config: './configs/config_bert.json'

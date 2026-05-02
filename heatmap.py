@@ -1,163 +1,128 @@
+import argparse
+import json
+import os
+import random
+
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
-from models import clip
 from PIL import Image
-import numpy as np
-import matplotlib.pyplot as plt
-import cv2
+from ruamel.yaml import YAML
+from torchvision import transforms
+from transformers import BertForMaskedLM
+
+from dataset import pre_caption, compute_model_specific_attention, _normalize_attention, _resize_attention
+from eval_AET import load_model
 
 
-def interpret(image, texts, model, device, start_layer=-1, start_layer_text=-1):
-    batch_size = texts.shape[0]
-    images = image.repeat(batch_size, 1, 1, 1)
-    logits_per_image, logits_per_text = model(images, texts)
-    probs = logits_per_image.softmax(dim=-1).detach().cpu().numpy()
-    index = [i for i in range(batch_size)]
-    one_hot = np.zeros((logits_per_image.shape[0], logits_per_image.shape[1]), dtype=np.float32)
-    one_hot[torch.arange(logits_per_image.shape[0]), index] = 1
-    one_hot = torch.from_numpy(one_hot).requires_grad_(True)
-    one_hot = torch.sum(one_hot.cuda() * logits_per_image)
-    model.zero_grad()
-
-    image_attn_blocks = list(dict(model.visual.transformer.resblocks.named_children()).values())
-
-    if start_layer == -1: 
-      # calculate index of last layer 
-      start_layer = len(image_attn_blocks) - 1
-    
-    num_tokens = image_attn_blocks[0].attn_probs.shape[-1]
-    R = torch.eye(num_tokens, num_tokens, dtype=image_attn_blocks[0].attn_probs.dtype).to(device)
-    R = R.unsqueeze(0).expand(batch_size, num_tokens, num_tokens)
-    for i, blk in enumerate(image_attn_blocks):
-        if i < start_layer:
-          continue
-        grad = torch.autograd.grad(one_hot, [blk.attn_probs], retain_graph=True)[0].detach()
-        cam = blk.attn_probs.detach()
-        cam = cam.reshape(-1, cam.shape[-1], cam.shape[-1])
-        grad = grad.reshape(-1, grad.shape[-1], grad.shape[-1])
-        cam = grad * cam
-        cam = cam.reshape(batch_size, -1, cam.shape[-1], cam.shape[-1])
-        cam = cam.clamp(min=0).mean(dim=1)
-        R = R + torch.bmm(cam, R)
-    image_relevance = R[:, 0, 1:]
-
-    
-    text_attn_blocks = list(dict(model.transformer.resblocks.named_children()).values())
-
-    if start_layer_text == -1: 
-      # calculate index of last layer 
-      start_layer_text = len(text_attn_blocks) - 1
-
-    num_tokens = text_attn_blocks[0].attn_probs.shape[-1]
-    R_text = torch.eye(num_tokens, num_tokens, dtype=text_attn_blocks[0].attn_probs.dtype).to(device)
-    R_text = R_text.unsqueeze(0).expand(batch_size, num_tokens, num_tokens)
-    for i, blk in enumerate(text_attn_blocks):
-        if i < start_layer_text:
-          continue
-        grad = torch.autograd.grad(one_hot, [blk.attn_probs], retain_graph=True)[0].detach()
-        cam = blk.attn_probs.detach()
-        cam = cam.reshape(-1, cam.shape[-1], cam.shape[-1])
-        grad = grad.reshape(-1, grad.shape[-1], grad.shape[-1])
-        cam = grad * cam
-        cam = cam.reshape(batch_size, -1, cam.shape[-1], cam.shape[-1])
-        cam = cam.clamp(min=0).mean(dim=1)
-        R_text = R_text + torch.bmm(cam, R_text)
-    text_relevance = R_text
-   
-    return text_relevance, image_relevance
+yaml = YAML(typ='safe')
 
 
-def show_image_relevance(image_relevance, image, orig_image):
-    # create heatmap from mask on image
-    def show_cam_on_image(img, mask):
-        heatmap = cv2.applyColorMap(np.uint8(255 * mask), cv2.COLORMAP_JET)
-        heatmap = np.float32(heatmap) / 255
-        cam = heatmap + np.float32(img)
-        cam = cam / np.max(cam)
-        return cam
+def overlay_heatmap(rgb_np, heatmap_np, alpha=0.45):
+    cmap = plt.get_cmap('jet')
+    color = cmap(heatmap_np)[..., :3]
+    blended = (1 - alpha) * rgb_np + alpha * color
+    return np.clip(blended, 0, 1)
 
-    fig, axs = plt.subplots(1, 2)
-    axs[0].imshow(orig_image)
-    axs[0].axis('off')
 
-    dim = int(image_relevance.numel() ** 0.5)
-    image_relevance = image_relevance.reshape(1, 1, dim, dim)
-    image_relevance = torch.nn.functional.interpolate(image_relevance, size=224, mode='bilinear')
-    image_relevance = image_relevance.reshape(224, 224).cuda().data.cpu().numpy()
-    image_relevance = (image_relevance - image_relevance.min()) / (image_relevance.max() - image_relevance.min())
-    image = image[0].permute(1, 2, 0).data.cpu().numpy()
-    image = (image - image.min()) / (image.max() - image.min())
-    vis = show_cam_on_image(image, image_relevance)
-    vis = np.uint8(255 * vis)
-    vis = cv2.cvtColor(np.array(vis), cv2.COLOR_RGB2BGR)
-    axs[1].imshow(vis)
-    axs[1].axis('off')
+def build_model_input_transform(model_name):
+    if model_name in {'ALBEF', 'TCL'}:
+        return transforms.Compose([
+            transforms.Resize((384, 384), interpolation=Image.BICUBIC),
+            transforms.ToTensor(),
+        ])
+    return transforms.Compose([
+        transforms.Resize(224, interpolation=Image.BICUBIC),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+    ])
 
-import cv2
-import numpy as np
-import torch
-import matplotlib.pyplot as plt
 
-# def enhance_colors_exponentially(image, gamma=2.0):
-#     """
-#     Apply exponential transformation to enhance warm and cool colors.
-    
-#     :param image: Input BGR image.
-#     :param gamma: Exponent for transformation (default 2.0 for stronger effect).
-#     :return: Color-enhanced image.
-#     """
-#     # Normalize image to range [0,1]
-#     image = image.astype(np.float32) / 255.0
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', default='./configs/Retrieval_flickr.yaml')
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--cuda_id', type=int, default=0)
+    parser.add_argument('--source_text_encoder', default='bert-base-uncased')
+    parser.add_argument('--albef_ckpt', default='./checkpoints/albef_flickr.pth')
+    parser.add_argument('--tcl_ckpt', default='./checkpoints/tcl_flickr.pth')
+    parser.add_argument('--num_samples', type=int, default=10)
+    parser.add_argument('--output_dir', default='./attention_vis_10')
+    args = parser.parse_args()
 
-#     # Apply exponential transformation
-#     image = np.power(image, gamma)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
-#     # Scale back to [0, 255]
-#     image = np.uint8(image * 255)
-    
-#     return image
+    device = torch.device(f'cuda:{args.cuda_id}' if torch.cuda.is_available() else 'cpu')
+    config = yaml.load(open(args.config, 'r'))
 
-# 应用指数变换
+    ann = json.load(open(config['test_file'], 'r'))
+    samples = ann[:min(args.num_samples, len(ann))]
 
-# def show_image_relevance(image_relevance, image):
-#     # create heatmap from mask on image
-#     def show_cam_on_image(img, mask):
-#         heatmap = cv2.applyColorMap(np.uint8(255 * mask), cv2.COLORMAP_JET)
-#         heatmap = np.float32(heatmap) / 255
-#         cam = heatmap + np.float32(img)
-#         cam = cam / np.max(cam)
-#         return cam
+    # load models
+    import eval_AET as eval_module
+    eval_module.config = config
+    model_names = ['ALBEF', 'TCL', 'CLIP_ViT']
+    models = {}
+    for m in model_names:
+        model, _, tokenizer = load_model(args, m, args.source_text_encoder, device)
+        model = model.to(device).eval()
+        models[m] = (model, tokenizer)
 
-#     dim = int(image_relevance.numel() ** 0.5)  # 7
-#     image_relevance = image_relevance.reshape(1, 1, dim, dim)  # [1, 1, 7, 7]
-#     image_relevance = torch.nn.functional.interpolate(image_relevance, size=224, mode='bilinear')  # [1, 1, 224, 224]
-#     image_relevance = image_relevance.reshape(224, 224).cpu().numpy()
-#     image_relevance = (image_relevance - image_relevance.min()) / (image_relevance.max() - image_relevance.min())
-    
-    
-#     image = image[0].permute(1, 2, 0).cpu().numpy()
-#     image = (image - image.min()) / (image.max() - image.min())
-#     vis = show_cam_on_image(image, image_relevance)
-#     vis = np.uint8(255 * vis)
-#     vis = cv2.cvtColor(vis, cv2.COLOR_RGB2BGR)
-#     vis_enhanced = enhance_colors_exponentially(vis, gamma=2.0)
+    os.makedirs(args.output_dir, exist_ok=True)
 
-    
-#     plt.imshow(vis_enhancedd)
-#     plt.axis('off')
-#     plt.show()
+    for i, item in enumerate(samples):
+        image_path = os.path.join(config['image_root'], item['image'])
+        caption = pre_caption(item['caption'][0], 30)
 
-    
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model, preprocess = clip.load("ViT-B/32", device=device, jit=False)
+        img_pil = Image.open(image_path).convert('RGB')
+        base_show = img_pil.resize((384, 384), Image.BICUBIC)
+        base_np = np.asarray(base_show).astype(np.float32) / 255.0
 
-img_path = "example.jpg"
-img = preprocess(Image.open(img_path)).unsqueeze(0).to(device)
-texts = ["a man with eyeglasses"]
-text = clip.tokenize(texts).to(device)
+        overlays = {}
+        for m in model_names:
+            model, tokenizer = models[m]
+            tfm = build_model_input_transform(m)
+            image_tensor = tfm(img_pil).to(device)
 
-R_text, R_image = interpret(model=model, image=img, texts=text, device=device)
-batch_size = text.shape[0]
-for i in range(batch_size):
-  # show_heatmap_on_text(texts[i], text[i], R_text[i])
-  show_image_relevance(R_image[i], img, orig_image=Image.open(img_path))
-  plt.show()
+            with torch.enable_grad():
+                attn = compute_model_specific_attention(
+                    image_tensor=image_tensor,
+                    caption=caption,
+                    model_name=m,
+                    source_model=model,
+                    device=device,
+                    tokenizer=tokenizer,
+                )
+            attn = _normalize_attention(attn)
+            attn = _resize_attention(attn, 384).detach().cpu().numpy()
+            overlays[m] = overlay_heatmap(base_np, attn)
+
+        fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+        axes[0].imshow(base_np)
+        axes[0].set_title('Original')
+        axes[0].axis('off')
+
+        axes[1].imshow(overlays['ALBEF'])
+        axes[1].set_title('ALBEF Attention')
+        axes[1].axis('off')
+
+        axes[2].imshow(overlays['TCL'])
+        axes[2].set_title('TCL Attention')
+        axes[2].axis('off')
+
+        axes[3].imshow(overlays['CLIP_ViT'])
+        axes[3].set_title('CLIP_ViT Attention')
+        axes[3].axis('off')
+
+        fig.suptitle(f"sample={i} | image={item['image']}\ncaption={caption}", fontsize=11)
+        fig.tight_layout()
+        fig.savefig(os.path.join(args.output_dir, f'compare_{i:02d}.png'), dpi=200)
+        plt.close(fig)
+
+    print(f'Saved {len(samples)} comparison figures to: {args.output_dir}')
+
+
+if __name__ == '__main__':
+    main()

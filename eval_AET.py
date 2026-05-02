@@ -702,7 +702,7 @@ def itm_eval(scores_i2t, scores_t2i, img2txt, txt2img, model_name, args):
     return eval_result
 
 def load_model(args,model_name,text_encoder, device):
-    tokenizer = BertTokenizer.from_pretrained("/home/myang/SA-AET/BLIP/bert")
+    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
     ref_model = BertForMaskedLM.from_pretrained(text_encoder)    
     if model_name in ['ALBEF', 'TCL']:
         model = ALBEF(config=config, text_encoder=text_encoder, tokenizer=tokenizer)
@@ -910,12 +910,7 @@ def main(args, config, use_topological_loss=True, use_attention_weighted=True):
     processed_image_root = os.path.join(config.get('processed_image_root', 'processed_dataset/'), args.source_model)
     dataset_device = device
 
-    # 统一注意力目录：attention_root/{source_model}/
-    # 为兼容历史配置，若没有 attention_root，则回退到旧键。
-    attention_root = config.get('attention_root')
-    if attention_root is None:
-        legacy_attn_root = config['fused_attn_root'] if args.source_model in ['ALBEF', 'TCL'] else config['aligned_attn_root']
-        attention_root = legacy_attn_root
+    attention_root = config['attention_root']
     processed_attn_root = os.path.join(attention_root, args.source_model)
 
     test_dataset = paired_dataset(
@@ -926,7 +921,6 @@ def main(args, config, use_topological_loss=True, use_attention_weighted=True):
         processed_attn_root,
         device=dataset_device,
         model_name=args.source_model,
-        attn_heatmap_mode=args.attn_heatmap_mode,
         source_attn_model=model
     )
     # return
@@ -995,12 +989,6 @@ if __name__ == '__main__':
     parser.add_argument('--num_clusters', default=30, type=int, help='聚类数量（用于计算topological loss）')
     parser.add_argument('--cache_dir', default='./cache', type=str, help='聚类中心缓存目录')
     parser.add_argument('--disable_cluster_cache', action='store_true', help='禁用聚类中心缓存')
-    parser.add_argument(
-        '--attn_heatmap_mode',
-        default='unified',
-        choices=['unified', 'per_model'],
-        help='注意力热图模式：unified=统一热图（原方法），per_model=按模型分别热图'
-    )
     parser.add_argument(
         '--experiment',
         default='main',

@@ -1,244 +1,231 @@
-import json 
+import json
 import os
 import re
+from typing import Dict, List
 
-import torch 
-import torch.nn as nn
+import numpy as np
+import torch
 import torch.nn.functional as F
-
 from PIL import Image
 from torch.utils.data import Dataset
+from torchvision import transforms
+from tqdm import tqdm
+
 from models import clip
 
-def pre_caption(caption,max_words):
-    caption = re.sub(
-        r"([,.'!?\"()*#:;~])",
-        '',
-        caption.lower(),
-    ).replace('-', ' ').replace('/', ' ').replace('<person>', 'person')
 
-    caption = re.sub(
-        r"\s{2,}",
-        ' ',
-        caption,
-    )
-    caption = caption.rstrip('\n') 
-    caption = caption.strip(' ')
-
-    #truncate caption
-    caption_words = caption.split(' ')
-    if len(caption_words)>max_words:
-        caption = ' '.join(caption_words[:max_words])
-            
+def pre_caption(caption, max_words):
+    caption = re.sub(r"([,.'!?\"()*#:;~])", '', caption.lower())
+    caption = caption.replace('-', ' ').replace('/', ' ').replace('<person>', 'person')
+    caption = re.sub(r"\s{2,}", ' ', caption)
+    caption = caption.rstrip('\n').strip(' ')
+    words = caption.split(' ')
+    if len(words) > max_words:
+        caption = ' '.join(words[:max_words])
     return caption
 
-# class paired_dataset(Dataset):
-#     def __init__(self, ann_file, transform, image_root, max_words=30):
-#         self.ann = json.load(open(ann_file, 'r'))
-#         self.transform = transform
-#         self.image_root = image_root
-#         self.max_words = max_words
 
-#         self.text = []
-#         self.image = []
-
-#         self.txt2img = {}
-#         self.img2txt = {}
-
-#         txt_id = 0
-#         for i, ann in enumerate(self.ann):
-#             self.img2txt[i] = []
-#             self.image.append(ann['image'])
-#             for j, caption in enumerate(ann['caption']):
-#                 self.text.append(pre_caption(caption, self.max_words))
-#                 self.txt2img[txt_id] = i
-#                 self.img2txt[i].append(txt_id)
-#                 txt_id += 1
-
-#     def __len__(self):
-#         return len(self.image)
-
-#     def __getitem__(self, index):
-#         image_path = os.path.join(self.image_root, self.image[index])
-#         image = Image.open(image_path).convert('RGB')
-#         image = self.transform(image)
-#         text_ids =  self.img2txt[index]
-#         texts = [self.text[i] for i in self.img2txt[index]]
-#         return image, texts, index, text_ids
-
-#     def collate_fn(self, batch):
-#         imgs, txt_groups, img_ids, text_ids_groups = list(zip(*batch))        
-#         imgs = torch.stack(imgs, 0)
-#         return imgs, txt_groups, list(img_ids), text_ids_groups
-
-import os
-import json
-import torch
-from PIL import Image
-from torchvision import transforms
+def _load_image(path):
+    return Image.open(path).convert('RGB')
 
 
-import os
-import json
-import torch
-import numpy as np
-from PIL import Image
-from torchvision import transforms
-from torch.utils.data import Dataset
-from tqdm import tqdm  # 导入tqdm
+def _normalize_attention(attn: torch.Tensor) -> torch.Tensor:
+    attn = attn.float()
+    attn_min = attn.min()
+    attn_max = attn.max()
+    return (attn - attn_min) / (attn_max - attn_min + 1e-8)
 
 
+def _resize_attention(attn: torch.Tensor, size: int) -> torch.Tensor:
+    attn = attn.unsqueeze(0).unsqueeze(0)
+    attn = F.interpolate(attn, size=(size, size), mode='bilinear', align_corners=False)
+    return attn[0, 0]
 
-def interpret(image, text, model, device, start_layer=-1):
-    batch_size = text.shape[0]
 
-    images = image.repeat(batch_size, 1, 1, 1)
-    logits_per_image, logits_per_text = model(images, text)
-    probs = logits_per_image.softmax(dim=-1).detach().cpu().numpy()
-    index = [i for i in range(batch_size)]
-    one_hot = np.zeros((logits_per_image.shape[0], logits_per_image.shape[1]), dtype=np.float32)
-    one_hot[torch.arange(logits_per_image.shape[0]), index] = 1
-    one_hot = torch.from_numpy(one_hot).requires_grad_(True)
-    one_hot = torch.sum(one_hot.to(device) * logits_per_image)
-    model.zero_grad()
+def _clip_interpret(image_tensor, caption, model, device, start_layer=-1):
+    text = clip.tokenize([caption]).to(device)
+    images = image_tensor.unsqueeze(0)
+    logits_per_image, _ = model(images, text)
+    one_hot = torch.ones_like(logits_per_image)
+    score = torch.sum(one_hot * logits_per_image)
+    model.zero_grad(set_to_none=True)
 
-    image_attn_blocks = list(dict(model.visual.transformer.resblocks.named_children()).values())
+    blocks = list(dict(model.visual.transformer.resblocks.named_children()).values())
+    if start_layer == -1:
+        start_layer = len(blocks) - 1
 
-    if start_layer == -1: 
-        # calculate index of last layer 
-        start_layer = len(image_attn_blocks) - 1
-    
-    num_tokens = image_attn_blocks[0].attn_probs.shape[-1]
-    R = torch.eye(num_tokens, num_tokens, dtype=image_attn_blocks[0].attn_probs.dtype).to(device)
-    R = R.unsqueeze(0).expand(batch_size, num_tokens, num_tokens)
-    for i, blk in enumerate(image_attn_blocks):
+    num_tokens = blocks[0].attn_probs.shape[-1]
+    R = torch.eye(num_tokens, device=device, dtype=blocks[0].attn_probs.dtype).unsqueeze(0)
+
+    for i, blk in enumerate(blocks):
         if i < start_layer:
             continue
-        grad = torch.autograd.grad(one_hot, [blk.attn_probs], retain_graph=True, allow_unused=True)[0].detach()
-        cam = blk.attn_probs.detach()
-        cam = cam.reshape(-1, cam.shape[-1], cam.shape[-1])
-        grad = grad.reshape(-1, grad.shape[-1], grad.shape[-1])
-        cam = grad * cam
-        cam = cam.reshape(batch_size, -1, cam.shape[-1], cam.shape[-1])
-        cam = cam.clamp(min=0).mean(dim=1)
+        grad = torch.autograd.grad(score, [blk.attn_probs], retain_graph=True, allow_unused=True)[0]
+        if grad is None:
+            continue
+        attn = blk.attn_probs.detach()
+        cam = (grad.detach() * attn).clamp(min=0)
+        cam = cam.reshape(1, -1, cam.shape[-2], cam.shape[-1]).mean(dim=1)
         R = R + torch.bmm(cam, R)
-    image_relevance = R[:, 0, 1:]
 
-    return image_relevance
+    relevance = R[:, 0, 1:]
+    side = int(relevance.shape[-1] ** 0.5)
+    return relevance.reshape(side, side)
+
+
+def _albef_tcl_interpret(image_tensor, caption, model, tokenizer, device):
+    # Register hook on last ViT block for attention/gradient
+    last_block = model.visual_encoder.blocks[-1]
+
+    text_input = tokenizer([caption], padding='max_length', truncation=True, max_length=30, return_tensors='pt').to(device)
+    image = image_tensor.unsqueeze(0)
+
+    out_img = model.visual_encoder(image, register_blk=len(model.visual_encoder.blocks) - 1)
+    image_feat = F.normalize(model.vision_proj(out_img[:, 0, :]), dim=-1)
+
+    text_out = model.text_encoder(text_input.input_ids, attention_mask=text_input.attention_mask, return_dict=True, mode='text')
+    text_feat = F.normalize(model.text_proj(text_out.last_hidden_state[:, 0, :]), dim=-1)
+
+    score = (image_feat * text_feat).sum()
+    model.zero_grad(set_to_none=True)
+    score.backward(retain_graph=True)
+
+    attn = last_block.attn.get_attention_map()      # [B, heads, tokens, tokens]
+    grad = last_block.attn.get_attn_gradients()     # [B, heads, tokens, tokens]
+    if attn is None or grad is None:
+        raise RuntimeError('ALBEF/TCL attention hooks are empty; check VisionTransformer register_blk path')
+
+    cam = (attn * grad).clamp(min=0).mean(dim=1)    # [B, tokens, tokens]
+    relevance = cam[:, 0, 1:]                       # CLS -> patches
+    side = int(relevance.shape[-1] ** 0.5)
+    return relevance.reshape(side, side).detach()
+
+
+def compute_model_specific_attention(image_tensor, caption, model_name, source_model, device, tokenizer=None):
+    if model_name == 'CLIP_ViT':
+        return _clip_interpret(image_tensor, caption, source_model, device)
+    if model_name in {'ALBEF', 'TCL'}:
+        if tokenizer is None:
+            tokenizer = source_model.tokenizer
+        return _albef_tcl_interpret(image_tensor, caption, source_model, tokenizer, device)
+    raise ValueError(f'Unsupported model_name for attention: {model_name}')
+
 
 class paired_dataset(Dataset):
-    def __init__(self, ann_file, transform, image_root, processed_image_root, processed_attn_root, device, max_words=30, model_name=None):
+    def __init__(
+        self,
+        ann_file,
+        transform,
+        image_root,
+        processed_image_root,
+        processed_attn_root,
+        device,
+        max_words=30,
+        model_name=None,
+        source_attn_model=None,
+    ):
+        if source_attn_model is None:
+            raise ValueError('source_attn_model is required; fallback is disabled')
+
         self.ann = json.load(open(ann_file, 'r'))
         self.transform = transform
         self.image_root = image_root
         self.processed_image_root = processed_image_root
         self.processed_attn_root = processed_attn_root
-        # self.model=model
         self.device = device
-        self.text = []
-        self.image = []
-        self.max_words=max_words
-        self.model_name=model_name
-        self.image_ids=[]
+        self.max_words = max_words
+        self.model_name = model_name
+        self.source_attn_model = source_attn_model.to(device).eval()
 
-        self.txt2img = {}
-        self.img2txt = {}
-        model, _ = clip.load("ViT-B/32", device=device, jit=False)
+        self.text: List[str] = []
+        self.image: List[str] = []
+        self.image_ids: List[str] = []
+        self.txt2img: Dict[int, int] = {}
+        self.img2txt: Dict[int, List[int]] = {}
+
+        self.attn_target_size = 384 if model_name in {'ALBEF', 'TCL'} else 224
+
+        os.makedirs(self.processed_image_root, exist_ok=True)
+        os.makedirs(self.processed_attn_root, exist_ok=True)
+
+        # Model-specific tensor transforms for attention computation
+        self.clip_attn_transform = transforms.Compose([
+            transforms.Resize(224, interpolation=Image.BICUBIC),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+        ])
+        self.albef_tcl_attn_transform = transforms.Compose([
+            transforms.Resize((384, 384), interpolation=Image.BICUBIC),
+            transforms.ToTensor(),
+        ])
+
         txt_id = 0
-        os.makedirs(self.processed_image_root, exist_ok=True)  # 保存处理过的图像的目录
-        os.makedirs(self.processed_attn_root, exist_ok=True)  # 保存相关性矩阵的目录
-
-        # 假设 self.ann 是一个列表或可迭代对象，你可以用 tqdm 包装它
-        for i, ann in tqdm(enumerate(self.ann), total=len(self.ann), desc="Processing Images"):
+        for i, ann in tqdm(enumerate(self.ann), total=len(self.ann), desc='Processing Images'):
             self.img2txt[i] = []
-            self.image.append(ann['image'])
-            self.image_ids.append(ann['image'])
-            image_path = os.path.join(self.image_root, ann['image'])
-            
-            # 目标文件夹中的图像路径
-            transformed_image_path = os.path.join(self.processed_image_root, ann['image'])
+            image_name = ann['image']
+            self.image.append(image_name)
+            self.image_ids.append(image_name)
 
-            # 如果目标文件夹中没有处理过的图像，就进行图像预处理
+            image_path = os.path.join(self.image_root, image_name)
+            transformed_image_path = os.path.join(self.processed_image_root, image_name)
+            os.makedirs(os.path.dirname(transformed_image_path), exist_ok=True)
+
+            source_image = _load_image(image_path)
             if not os.path.exists(transformed_image_path):
-                
-                image = Image.open(image_path).convert('RGB')
-                
-                # 对图像进行预处理
-                image_transformed = self.transform(image)
+                transformed = self.transform(source_image)
+                transforms.ToPILImage()(transformed).save(transformed_image_path)
 
-                # 保存处理过的图像到新的文件夹
-                transformed_image = transforms.ToPILImage()(image_transformed)  # 将tensor转回PIL图像
-                transformed_image.save(transformed_image_path)
-                
-                if self.model_name in ['ALBEF', 'TCL']:
-                    n_px = model.visual.input_resolution
-                    clip_transform=transforms.Compose([
-                        transforms.Resize(n_px, interpolation=Image.BICUBIC),
-                        transforms.CenterCrop(n_px),
-                        transforms.ToTensor(),       
-                    ])
-                    image_transformed=clip_transform(image)
-                image_tensor = image_transformed.to(self.device)
-                for _, caption in enumerate(ann['caption']):
-                    processed_caption = pre_caption(caption, self.max_words)
-                    self.text.append(processed_caption)
-                    self.txt2img[txt_id] = i
-                    self.img2txt[i].append(txt_id)
-                    text = clip.tokenize([processed_caption]).to(device)
-                    relevance_matrix = interpret(image_tensor, text, model, self.device)
-                    if self.model_name in ['ALBEF', 'TCL']:
-                        dim = int(relevance_matrix.numel() ** 0.5)
-                        relevance_matrix = relevance_matrix.reshape(1, 1, dim, dim)
-                        relevance_matrix = torch.nn.functional.interpolate(relevance_matrix, size=384, mode='bilinear')
-                        relevance_matrix = relevance_matrix.reshape(384, 384).cuda().data
-                    else:
-                        dim = int(relevance_matrix.numel() ** 0.5)
-                        relevance_matrix = relevance_matrix.reshape(1, 1, dim, dim)
-                        relevance_matrix = torch.nn.functional.interpolate(relevance_matrix, size=224, mode='bilinear')
-                        relevance_matrix = relevance_matrix.reshape(224, 224).cuda().data
-                    # 保存每个文本的相关性矩阵到指定目录，命名为 'image_name_text_id.npy'
-                    attn_matrix_path = os.path.join(self.processed_attn_root, f"{ann['image']}_text{txt_id}.npy")
-                    np.save(attn_matrix_path, relevance_matrix.cpu().numpy())
-                    txt_id+=1
+            if self.model_name == 'CLIP_ViT':
+                attn_image = self.clip_attn_transform(source_image).to(self.device)
             else:
-                for _, caption in enumerate(ann['caption']):
-                    processed_caption = pre_caption(caption, self.max_words)
-                    self.text.append(processed_caption)
-                    self.txt2img[txt_id] = i
-                    self.img2txt[i].append(txt_id)
-                    txt_id+=1
+                attn_image = self.albef_tcl_attn_transform(source_image).to(self.device)
+
+            for caption in ann['caption']:
+                processed_caption = pre_caption(caption, self.max_words)
+                self.text.append(processed_caption)
+                self.txt2img[txt_id] = i
+                self.img2txt[i].append(txt_id)
+
+                attn_matrix_path = os.path.join(self.processed_attn_root, f'{image_name}_text{txt_id}.npy')
+                os.makedirs(os.path.dirname(attn_matrix_path), exist_ok=True)
+                if not os.path.exists(attn_matrix_path):
+                    with torch.enable_grad():
+                        relevance_matrix = compute_model_specific_attention(
+                            attn_image,
+                            processed_caption,
+                            self.model_name,
+                            self.source_attn_model,
+                            self.device,
+                        )
+                    relevance_matrix = _normalize_attention(relevance_matrix)
+                    relevance_matrix = _resize_attention(relevance_matrix, self.attn_target_size)
+                    np.save(attn_matrix_path, relevance_matrix.detach().cpu().numpy())
+                txt_id += 1
 
     def __len__(self):
         return len(self.image)
 
     def __getitem__(self, index):
-        # 直接从保存的图像文件夹加载处理后的图像
         image_path = os.path.join(self.processed_image_root, self.image[index])
-        image = Image.open(image_path).convert('RGB')
-        to_tensor = transforms.ToTensor()
-        image = to_tensor(image)
-        
-        # 加载与图像对应的相关性矩阵
+        image = transforms.ToTensor()(_load_image(image_path))
+
         text_ids = self.img2txt[index]
-        texts = [self.text[i] for i in self.img2txt[index]]
+        texts = [self.text[i] for i in text_ids]
 
         attn_matrices = []
         for text_id in text_ids:
-            # 加载与文本对应的相关性矩阵
-            attn_matrix_path = os.path.join(self.processed_attn_root, f"{self.image[index]}_text{text_id}.npy")
-            image_relevance = np.load(attn_matrix_path)
-            image_relevance=torch.from_numpy(image_relevance).float()
-            image_relevance = (image_relevance - image_relevance.min()) / (image_relevance.max() - image_relevance.min())
-            attn_matrices.append(image_relevance)
+            attn_matrix_path = os.path.join(self.processed_attn_root, f'{self.image[index]}_text{text_id}.npy')
+            image_relevance = torch.from_numpy(np.load(attn_matrix_path)).float()
+            attn_matrices.append(_normalize_attention(image_relevance))
+
         attn_matrices = torch.stack(attn_matrices)
         averaged_attn_matrices = attn_matrices.mean(dim=0)
         return image, texts, self.image_ids[index], index, text_ids, averaged_attn_matrices
 
     def collate_fn(self, batch):
-        imgs, txt_groups, img_name, img_ids, text_ids_groups, attn_matrices_groups = list(zip(*batch))        
+        imgs, txt_groups, img_name, img_ids, text_ids_groups, attn_matrices_groups = list(zip(*batch))
         imgs = torch.stack(imgs, 0)
         return imgs, txt_groups, img_name, list(img_ids), text_ids_groups, attn_matrices_groups
-
 
 
 class paired_dataset2(Dataset):
@@ -250,7 +237,6 @@ class paired_dataset2(Dataset):
 
         self.text = []
         self.image = []
-
         self.txt2img = {}
         self.img2txt = {}
 
@@ -258,7 +244,7 @@ class paired_dataset2(Dataset):
         for i, ann in enumerate(self.ann):
             self.img2txt[i] = []
             self.image.append(ann['image'])
-            for j, caption in enumerate(ann['caption']):
+            for caption in ann['caption']:
                 self.text.append(pre_caption(caption, self.max_words))
                 self.txt2img[txt_id] = i
                 self.img2txt[i].append(txt_id)
@@ -271,14 +257,15 @@ class paired_dataset2(Dataset):
         image_path = os.path.join(self.image_root, self.image[index])
         image = Image.open(image_path).convert('RGB')
         image = self.transform(image)
-        text_ids =  self.img2txt[index]
+        text_ids = self.img2txt[index]
         texts = [self.text[i] for i in self.img2txt[index]]
         return image, texts, index, text_ids, self.image[index]
 
     def collate_fn(self, batch):
-        imgs, txt_groups, img_ids, text_ids_groups,image_paths = list(zip(*batch))        
+        imgs, txt_groups, img_ids, text_ids_groups, image_paths = list(zip(*batch))
         imgs = torch.stack(imgs, 0)
-        return imgs, txt_groups, list(img_ids), text_ids_groups,image_paths
+        return imgs, txt_groups, list(img_ids), text_ids_groups, image_paths
+
 
 class pair_dataset(Dataset):
     def __init__(self, ann_file, transform, image_root, max_words=30):
@@ -296,7 +283,7 @@ class pair_dataset(Dataset):
         txt_id = 0
         for i, ann in enumerate(self.ann):
             self.img2txt[i] = []
-            for j, caption in enumerate(ann['caption']):
+            for caption in ann['caption']:
                 self.image.append(ann['image'])
                 self.text.append(pre_caption(caption, self.max_words))
                 self.txt2img[txt_id] = i
@@ -313,7 +300,8 @@ class pair_dataset(Dataset):
         text = self.text[index]
 
         return image, text, index
-    
+
+
 class pair_dataset2(Dataset):
     def __init__(self, ann_file, transform, image_root, max_words=30):
         self.ann = json.load(open(ann_file, 'r'))
@@ -330,7 +318,7 @@ class pair_dataset2(Dataset):
         txt_id = 0
         for i, ann in enumerate(self.ann):
             self.img2txt[i] = []
-            for j, caption in enumerate(ann['caption']):
+            for caption in ann['caption']:
                 self.image.append(ann['image'])
                 self.text.append(pre_caption(caption, self.max_words))
                 self.txt2img[txt_id] = i
@@ -346,4 +334,4 @@ class pair_dataset2(Dataset):
         image = self.transform(image)
         text = self.text[index]
 
-        return image, text, index,self.image[index]
+        return image, text, index, self.image[index]

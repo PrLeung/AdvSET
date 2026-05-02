@@ -28,37 +28,45 @@ def dynamic_scaling(A, gamma=2.0, mode='exponential'):
     else:
         return torch.exp(gamma * (A - 0.5))  # 默认指数增强
 
-def get_weighted_perturbation(delta, R, 
+def get_weighted_perturbation(delta, R,
                             gamma=1.0, mode='linear',
                             epsilon_constraint=None):
-    """生成加权扰动"""
-    # 将 R 从 tuple 转换为 [batch, h, w] 张量
-    R = torch.stack(R, dim=0)
-    
+    """生成加权扰动（保持原目的：高注意力区域获得更大扰动）"""
+    # 兼容 R 为 tuple/list 或 tensor
+    if isinstance(R, (tuple, list)):
+        R = torch.stack(R, dim=0)
+    elif not isinstance(R, torch.Tensor):
+        raise TypeError(f"R must be tuple/list/tensor, got {type(R)}")
+
+    R = R.to(delta.device, dtype=delta.dtype)
+
     # 维度验证
     assert R.shape[0] == delta.shape[0], \
         f"注意力矩阵的批次维度 {R.shape[0]} 应与扰动的批次维度 {delta.shape[0]} 匹配"
     assert R.shape[1:] == delta.shape[2:], \
         f"注意力矩阵的空间维度 {R.shape[1:]} 应与扰动的空间维度 {delta.shape[2:]} 匹配"
-    
+
+    # 每个样本独立归一化，避免 batch 内相互影响
+    r_min = R.amin(dim=(1, 2), keepdim=True)
+    r_max = R.amax(dim=(1, 2), keepdim=True)
+    R_norm = (R - r_min) / (r_max - r_min + 1e-8)
+
     # 动态范围调整
-    scaled_A = dynamic_scaling(R, gamma, mode)
-    
+    scaled_A = dynamic_scaling(R_norm, gamma, mode)
+
     # 扩展并广播注意力矩阵以匹配 delta 的维度
-    A = scaled_A.unsqueeze(1).to(delta.device)  # 变为 [batch, 1, h, w]
-    A = A.expand_as(delta)  # 自动广播到与delta相同尺寸 [batch, c, h, w]
-    
-    # 将 delta 映射到 [0, 2] 的范围
-    delta_scaled = delta * 2  # 将 delta 从 [0, 1] 映射到 [0, 2]
-    
-    # 应用注意力加权
-    weighted_delta = delta_scaled * A
-    
-    # 强度约束处理
+    A = scaled_A.unsqueeze(1)  # [batch, 1, h, w]
+    A = A.expand_as(delta)     # [batch, c, h, w]
+
+    # 应用注意力加权（不再额外放大 delta）
+    weighted_delta = delta * A
+
+    # 强度约束：按样本独立约束，避免一个样本影响整个 batch
     if epsilon_constraint is not None:
-        current_max = weighted_delta.abs().max().item()
-        weighted_delta = (weighted_delta / current_max) * epsilon_constraint
-    
+        current_max = weighted_delta.abs().amax(dim=(1, 2, 3), keepdim=True)
+        weighted_delta = weighted_delta / (current_max + 1e-12)
+        weighted_delta = weighted_delta * epsilon_constraint
+
     return weighted_delta
 
 
@@ -497,7 +505,7 @@ class ImageAttacker():
                             R = attn_matrices,
                             gamma = 2.5,
                             mode = 'exponential',
-                            epsilon_constraint = 0.1
+                            epsilon_constraint = self.step_size
                         )
 
                     adv_imgs = clone_adv_imgs.detach() + perturbation
@@ -553,7 +561,7 @@ class ImageAttacker():
                         R = attn_matrices,
                         gamma = 2.5,
                         mode = 'exponential',
-                        epsilon_constraint = 0.1
+                        epsilon_constraint = self.step_size
                     )
                 adv_imgs = clone_adv_imgs.detach() + perturbation
                 adv_imgs = torch.min(torch.max(adv_imgs, imgs - self.eps), imgs + self.eps)
@@ -586,7 +594,7 @@ class ImageAttacker():
                         R = attn_matrices,
                         gamma = 2.5,
                         mode = 'exponential',
-                        epsilon_constraint = 0.1
+                        epsilon_constraint = self.step_size
                     )
                 adv_imgs = adv_imgs.detach() + perturbation
                 adv_imgs = torch.min(torch.max(adv_imgs, imgs - self.eps), imgs + self.eps)

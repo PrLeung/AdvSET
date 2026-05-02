@@ -4,7 +4,7 @@
 
 # Logs
 *.log
-
+*.png
 # Model checkpoints / weights
 checkpoints/
 *.pth
