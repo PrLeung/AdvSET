@@ -115,7 +115,7 @@ def umap(output_net, target_net, eps=0.0000001):
     loss = CE(target_similarity,model_similarity)
     return loss
 
-def umap_with_clusters(output_net, target_net, cluster_centers, top_k=4, eps=0.0000001, return_cluster_info=False):
+def umap_with_clusters(output_net, target_net, cluster_centers, top_k=8, eps=0.0000001, return_cluster_info=False):
     """
     使用聚类中心计算邻接概率矩阵，计算逻辑与原始 umap 函数一致
     
@@ -356,14 +356,14 @@ class ImageAttacker():
         if self.use_topological_loss:
             if self.cluster_centers is not None:
                 if return_cluster_info:
-                    umap_loss_pos1, cluster_info = umap_with_clusters(adv_imgs_embeds, imgs_embs, self.cluster_centers, top_k=4, return_cluster_info=True)
+                    umap_loss_pos1, cluster_info = umap_with_clusters(adv_imgs_embeds, imgs_embs, self.cluster_centers, top_k=8, return_cluster_info=True)
                 else:
-                    umap_loss_pos1 = umap_with_clusters(adv_imgs_embeds, imgs_embs, self.cluster_centers, top_k=4)
+                    umap_loss_pos1 = umap_with_clusters(adv_imgs_embeds, imgs_embs, self.cluster_centers, top_k=8)
             else:
                 umap_loss_pos1 = umap(adv_imgs_embeds, imgs_embs)
             
             umap_loss=umap_loss_pos1
-            print("loss_IaTcpos",loss_IaTcpos,"umap_loss",umap_loss)
+            # print("loss_IaTcpos",loss_IaTcpos,"umap_loss",umap_loss)
             loss = loss_IaTcpos+5*umap_loss
         else:
             loss = loss_IaTcpos
@@ -420,7 +420,7 @@ class ImageAttacker():
         sample_cluster_sim = torch.mm(image_embeds, cluster_centers.t())  # [batch_size, num_clusters]
         
         # 选择最近的 top_k 个聚类中心
-        top_k = 4
+        top_k = 8
         top_k_values, top_k_indices = torch.topk(sample_cluster_sim, top_k, dim=1)  # [batch_size, top_k]
         
         cluster_info = {

@@ -702,8 +702,14 @@ def itm_eval(scores_i2t, scores_t2i, img2txt, txt2img, model_name, args):
     return eval_result
 
 def load_model(args,model_name,text_encoder, device):
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-    ref_model = BertForMaskedLM.from_pretrained(text_encoder)    
+    tokenizer = BertTokenizer.from_pretrained(
+        "bert-base-uncased",
+        cache_dir=args.bert_cache_dir,
+    )
+    ref_model = BertForMaskedLM.from_pretrained(
+        text_encoder,
+        cache_dir=args.bert_cache_dir,
+    )
     if model_name in ['ALBEF', 'TCL']:
         model = ALBEF(config=config, text_encoder=text_encoder, tokenizer=tokenizer)
         model_ckpt = args.albef_ckpt if model_name == 'ALBEF' else args.tcl_ckpt
@@ -970,13 +976,15 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='./configs/Retrieval_flickr.yaml')
     parser.add_argument('--seed', default=42, type=int)
-    parser.add_argument('--batch_size', default=8, type=int)
+    parser.add_argument('--batch_size', default=4, type=int)
     parser.add_argument('--cuda_id', default=0, type=int)
 
     parser.add_argument('--model_list', nargs='+', type=str, default=['ALBEF', 'TCL', 'CLIP_ViT'])
     parser.add_argument('--source_model', default='ALBEF', type=str)
     parser.add_argument('--source_text_encoder', default='bert-base-uncased', type=str)   
     parser.add_argument('--target_text_encoder', default='bert-base-uncased', type=str)
+    parser.add_argument('--bert_cache_dir', default='/home/myang/disco/checkpoints', type=str,
+                        help='HuggingFace BERT cache directory')
 
     parser.add_argument('--albef_ckpt', default='./checkpoints/albef_flickr.pth', type=str) 
     parser.add_argument('--tcl_ckpt', default='./checkpoints/tcl_flickr.pth', type=str)    

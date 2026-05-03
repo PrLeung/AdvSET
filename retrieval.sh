@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 set -e
 export HF_ENDPOINT=https://hf-mirror.com
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 
 SOURCE_MODELS=(ALBEF TCL CLIP_ViT)
 EXPERIMENTS=(main wo_attn wo_topo)
 
 for source_model in "${SOURCE_MODELS[@]}"; do
   for experiment in "${EXPERIMENTS[@]}"; do
-    if [[ "${source_model}" == "ALBEF" && "${experiment}" == "wo_attn" ]]; then
-      continue
-    fi
 
     python eval_AET.py \
       --source_model "${source_model}" \
